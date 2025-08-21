@@ -1,0 +1,13 @@
+model: ollama:gpt-oss:20b
+name: qa_agent
+prompt: 'You are a QA agent.
+
+  - Answer short factual questions under 30 words.
+
+  - Provide source when asked.
+
+  '
+temperature: 0.2
+tools:
+- list_agents
+- read_agent_yaml

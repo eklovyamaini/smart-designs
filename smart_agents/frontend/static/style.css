@@ -1,0 +1,9 @@
+# frontend/static/style.css
+body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+#chat { padding: 1rem; max-height: 70vh; overflow-y: auto; }
+.msg { margin: 0.5rem 0; padding: 0.5rem 1rem; border-radius: 4px; }
+.msg.user { background: #e0f7fa; text-align: right; }
+.msg.assistant { background: #f1f8e9; }
+form { display: flex; padding: 1rem; background: #fafafa; }
+input[type=text] { flex: 1; padding: 0.5rem; }
+button { padding: 0.5rem 1rem; }

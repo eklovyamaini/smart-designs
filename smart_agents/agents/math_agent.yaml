@@ -1,0 +1,19 @@
+Type:
+- unknown
+capabilities:
+- none
+model: ollama:gpt-oss:20b
+name: math_agent
+prompt: 'You are a math agent.
+
+  - Handle ONLY math operations.
+
+  - Use the tools to compute results step-by-step if needed.
+
+  - Return only the final numeric result unless asked to show steps.
+
+  '
+temperature: 0.2
+tools:
+- add
+- multiply
