@@ -1,0 +1,183 @@
+# doc_to_confluence/example_config.yaml
+#
+# Migration configuration: maps Word document sections → Confluence targets.
+#
+# ── Environment variable substitution ──────────────────────────────────────
+# Use ${VAR_NAME} in any string value to substitute environment variables.
+# Recommended for credentials:
+#   export CONFLUENCE_API_TOKEN="ATATT3x..."
+#   export CONFLUENCE_USER="user@example.com"
+#
+# ── LLM task ordering ───────────────────────────────────────────────────────
+# Tasks always run in this fixed order (only include the ones you want):
+#   reformat → summarize → plantuml_diagram → confluence_format
+# 'confluence_format' must always be the LAST task if included.
+#
+# ── LLM options ─────────────────────────────────────────────────────────────
+#   expand_tables_to_pages : when true, every table in the matched section AND
+#     all of its subsections is split into one Confluence page per data row.
+#     Each page shows the row transposed into a 2-column header/value table
+#     (column 1 = original header, column 2 = cell value) and is nested under
+#     the section's own Confluence page.  Use confluence.row_page_title to
+#     control the page title (supports {col_0}, {col_1}, … placeholders).
+#
+# ── match_type options ──────────────────────────────────────────────────────
+#   heading          : matches heading text (case-insensitive regex search)
+#   regex            : same as heading but makes intent explicit
+#   custom_delimiter : matches paragraphs that act as custom section markers
+#   table            : targets the first standalone table in the document
+
+#ATATT3xFfGF0z08BsHPdpDZIytVl_NDt3ky2tjq7EDDd3ZucTBehnSou3oNZqYVA4E9VZ_uNrviRfOWgkjDiZcGOBbP06Wnoqq5e9dSZk6IjNIaDroNh8TGLd3shErg2ebm7S14YxiNW7awiJmH-BgxVcc-TqAdRimFB3Nh2RwbtrmqNXbS8rSc=067180FD
+#eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhYWIyMThjMC02YTQxLTRjNDItYmNjOC0wYzMyYTNkNzA2M2MiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwiaWF0IjoxNzcxNTU3MDAyfQ.cE08AgWeb5b_EfbIdanK1hd8WotTtXyd28KKoqT0WKw
+# ─── Global Settings ─────────────────────────────────────────────────────────
+
+# Ollama model name (must be pulled: ollama pull <model>)
+llm_model: "gpt-oss:20b"
+llm_temperature: 0.1
+
+# Confluence Cloud connection details
+confluence_base_url: "https://myorg.atlassian.net"
+confluence_user: "${CONFLUENCE_USER}"
+confluence_api_token: "${CONFLUENCE_API_TOKEN}"
+
+# SQLite logging (stores run history in the specified DB file)
+db_logging: true
+db_path: "doc_to_confluence/migration.db"
+
+
+# ─── Section Mappings ────────────────────────────────────────────────────────
+
+sections:
+
+  # ── 1. Create a new page from the "Executive Summary" heading ────────────
+  # The section is reformatted for clarity, gets a 2-3 sentence summary
+  # prepended, then converted to Confluence storage format.
+  - match: "Executive Summary"
+    match_type: heading
+    confluence:
+      space_key: "PROJ"
+      parent_page_id: "123456"    # page ID to nest under (omit for top-level)
+      page_id: null               # not needed for create
+      action: create
+    llm:
+      enabled: true
+      tasks:
+        - reformat
+        - summarize
+        - confluence_format       # always last
+
+  # ── 2. Update an existing architecture page with PlantUML diagram ────────
+  # The architecture section is reformatted, a PlantUML diagram is generated
+  # from the text, then the whole thing is converted to Confluence XML.
+  - match: "Technical Architecture"
+    match_type: heading
+    confluence:
+      space_key: "PROJ"
+      page_id: "654321"           # existing page to replace content of
+      action: update
+    llm:
+      enabled: true
+      tasks:
+        - reformat
+        - plantuml_diagram        # generates @startuml block if applicable
+        - confluence_format
+
+  # ── 3. Append content to an existing page (e.g., meeting minutes log) ───
+  # No reformatting - just format as Confluence XML and append.
+  - match: "Meeting Minutes"
+    match_type: heading
+    confluence:
+      space_key: "PROJ"
+      page_id: "789012"
+      action: append
+    llm:
+      enabled: true
+      tasks:
+        - confluence_format
+
+  # ── 4. Regex match: capture any "Appendix" section ───────────────────────
+  # Matches "Appendix A", "Appendix B", "Appendix - References", etc.
+  - match: "^Appendix"
+    match_type: regex
+    confluence:
+      space_key: "DOCS"
+      parent_page_id: "900000"
+      action: create
+    llm:
+      enabled: true
+      tasks:
+        - reformat
+        - confluence_format
+
+  # ── 5. No LLM: migrate content as plain text with basic XML wrapping ─────
+  # Useful for verbatim migration of legal text, raw data, etc.
+  - match: "Terms and Conditions"
+    match_type: heading
+    confluence:
+      space_key: "LEGAL"
+      parent_page_id: "111000"
+      action: create
+    llm:
+      enabled: false
+      tasks: []
+
+  # ── 6. Custom delimiter: non-heading section marker ──────────────────────
+  # Any paragraph with text "=== SECTION ===" triggers a new section.
+  - match: "={3,}\\s*SECTION\\s*={3,}"
+    match_type: custom_delimiter
+    confluence:
+      space_key: "DOCS"
+      parent_page_id: "999001"
+      action: create
+    llm:
+      enabled: true
+      tasks:
+        - confluence_format
+
+  # ── 7. First table in document → new Confluence page ────────────────────
+  # Matches the first standalone table block (not a table within a section).
+  - match: ""
+    match_type: table
+    confluence:
+      space_key: "DATA"
+      parent_page_id: "555100"
+      action: create
+    llm:
+      enabled: true
+      tasks:
+        - confluence_format       # renders pipe-text as <table> XHTML
+
+  # ── 8. Full pipeline: all 4 LLM tasks ────────────────────────────────────
+  # Best for complex technical sections with process flows worth diagramming.
+  - match: "System Design"
+    match_type: heading
+    confluence:
+      space_key: "ARCH"
+      parent_page_id: "100200"
+      action: create
+    llm:
+      enabled: true
+      tasks:
+        - reformat
+        - summarize
+        - plantuml_diagram        # diagram appended after text if applicable
+        - confluence_format       # must be last
+
+  # ── 9. Page Elements: one page per table row (section + subsections) ──────
+  # Every table in the "Page Elements" section and any of its subsections is
+  # expanded: each data row becomes its own Confluence page nested under the
+  # section page.  The page body is the row transposed into a 2-column
+  # header/value table.  row_page_title controls the page title — here the
+  # first column value (e.g. element name) is used.
+  - match: "Page Elements"
+    match_type: heading
+    confluence:
+      space_key: "PROJ"
+      parent_page_id: "200300"
+      action: create
+      row_page_title: "{col_0}"   # page title = first column value per row
+    llm:
+      enabled: true
+      expand_tables_to_pages: true   # one page per row (section + subsections)
+      tasks:
+        - confluence_format

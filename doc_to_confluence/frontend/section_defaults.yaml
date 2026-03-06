@@ -1,0 +1,175 @@
+# ─────────────────────────────────────────────────────────────────
+#  doc_to_confluence — Section Defaulting Rules
+#
+#  Rules are evaluated IN ORDER; the FIRST matching rule wins.
+#  Sections that match no rule are skipped (not migrated).
+#
+# ── context_vars ──────────────────────────────────────────────
+#  Context variables are initialised once per document and updated
+#  by each rule's `capture` block.  Use them in `apply` values via
+#  {{variable_name}}.  Also available:  {{original_title}}
+#
+# ── match conditions (all specified must match) ────────────────
+#  title    - regex (re.search, case-insensitive).
+#             Capture groups: $0 = full title, $1 = first group, etc.
+#  context  - map of context variable name → expected value.
+#             Only fires when all context vars equal those values.
+#  level    - exact heading level: 1=H1, 2=H2, 3=H3/H4/H5
+#
+# ── capture (optional) ────────────────────────────────────────
+#  Updates context variables when this rule fires.
+#  Values may reference regex capture groups ($0, $1, $2 …).
+#  $0 always equals the full section title string.
+#
+# ── apply settings ────────────────────────────────────────────
+#  skip                - true  → exclude section from migration entirely
+#  folder_only         - true  → no page created; title becomes a folder
+#  page_title          - override page/folder title; {{vars}} are expanded
+#  folder_path         - parent folder path in Confluence; {{vars}} expanded
+#  llm_enabled         - false → uncheck "Enable LLM"
+#  llm_tasks           - list  → pre-select exactly these tasks
+#                         omit  → keep HTML defaults (plantuml_diagram + confluence_format)
+#  action              - create (default) | update | append
+#  table_rows_to_pages - true  → each data row in a section table creates its own page
+#                         under the folder defined by folder_path + page_title
+#  row_page_title      - template for per-row page titles; {col_0}, {col_1} … are
+#                         replaced with row cell values at migration time.
+#                         {{vars}} are interpolated at rule-eval time (as usual).
+#
+# ─────────────────────────────────────────────────────────────────
+
+section_defaults:
+
+  context_vars:
+    module_name:          ""
+    screen_code:          ""
+    screen_title:         ""
+    inside_page_elements: false
+
+  rules:
+
+    # ── 1. Module header ("Module - <name>") ─────────────────────
+    - name: "Module header"
+      match:
+        title: "^Module\\s*[-–]\\s*(.+)"
+      capture:
+        module_name:          "$1"
+        screen_code:          ""
+        screen_title:         ""
+        inside_page_elements: false
+      apply:
+        skip: true
+
+    # ── 2. Business Process ───────────────────────────────────────
+    - name: "Business Process"
+      match:
+        title: "Business Process"
+      apply:
+        page_title:   "{{module_name}} - Business Process"
+        folder_path:  "{{module_name}} - Module/"
+        llm_enabled:  true
+        llm_tasks:
+          - plantuml_diagram
+          - confluence_format
+
+    # ── 3. Accessing this Module (merge into Business Process) ────
+    #  Content is structurally part of Business Process; skip as
+    #  a separate page.  Remove this rule if you want it as its own.
+    - name: "Accessing this Module"
+      match:
+        title: "Accessing this Module"
+      apply:
+        action:      append
+        page_title:  "{{module_name}} - Business Process"
+        folder_path: "{{module_name}} - Module/"
+        llm_enabled: false
+
+    # ── 4. Screen Designs folder ──────────────────────────────────
+    - name: "Screen Designs folder"
+      match:
+        title: "Screen Designs"
+      capture:
+        inside_page_elements: false
+      apply:
+        folder_only: true
+        page_title:  "{{module_name}} - Screen Designs"
+        folder_path: "{{module_name}} - Module/"
+
+    # ── 5. Individual screen section (S### - Name) ────────────────
+    - name: "Screen section (S### code prefix)"
+      match:
+        title: "^(S\\d{3})\\s*[-–]\\s*(.+)"
+      capture:
+        screen_code:          "$1"
+        screen_title:         "$0"
+        inside_page_elements: false
+      apply:
+        folder_only: true
+        page_title:  "{{screen_title}}"
+        folder_path: "{{module_name}} - Module/{{module_name}} - Screen Designs/"
+
+    # ── 6. Functional Description ─────────────────────────────────
+    - name: "Functional Description"
+      match:
+        title: "Functional Description"
+      apply:
+        page_title:  "{{screen_code}} - Functional Description"
+        folder_path: "{{module_name}} - Module/{{module_name}} - Screen Designs/{{screen_title}}/"
+        llm_enabled: false
+
+    # ── 7. Use Cases ──────────────────────────────────────────────
+    - name: "Use Cases"
+      match:
+        title: "Use Cases?"
+      apply:
+        page_title:  "{{screen_title}} - Use Cases"
+        folder_path: "{{module_name}} - Module/{{module_name}} - Screen Designs/{{screen_title}}/"
+        llm_enabled: false
+
+    # ── 8. Screen Mockup ──────────────────────────────────────────
+    - name: "Screen Mockup"
+      match:
+        title: "Screen Mockup"
+      apply:
+        page_title:  "{{screen_code}} - Screen Mockup"
+        folder_path: "{{module_name}} - Module/{{module_name}} - Screen Designs/{{screen_title}}/"
+
+    # ── 9. Page Elements folder ───────────────────────────────────
+    - name: "Page Elements folder"
+      match:
+        title: "Page Elements"
+      capture:
+        inside_page_elements: true
+      apply:
+        page_title:           "{{screen_code}} - Page Elements"
+        folder_path:          "{{module_name}} - Module/{{module_name}} - Screen Designs/{{screen_title}}/"
+        table_rows_to_pages:  true
+        row_page_title:       "{{screen_code}} - {col_0}"
+        expand_tables_to_pages: true
+        llm_enabled: false
+
+    # ── 10. Page element detail pages ─────────────────────────────
+    #  Matches any header that appears AFTER "Page Elements" and
+    #  BEFORE the next screen section (S###).  The S### rule above
+    #  resets inside_page_elements, so this only fires in between.
+    #
+    #  LLM is intentionally disabled here.  These sections contain
+    #  structured data (a properties table + a screenshot) that must
+    #  be preserved as-is.  Running plantuml_diagram or confluence_format
+    #  on sparse sentinel tokens risks dropping the table and image.
+    - name: "Page element detail"
+      match:
+        context:
+          inside_page_elements: true
+      apply:
+        page_title:          "{{screen_code}} - {{original_title}}"
+        folder_path:         "{{module_name}} - Module/{{module_name}} - Screen Designs/{{screen_title}}/{{screen_code}} - Page Elements/"
+        table_rows_to_pages: true
+        row_page_title:      "{{screen_code}} - {col_0}"
+
+    # ── 11. Catch-all: ignore everything else ─────────────────────
+    - name: "Ignore unmatched"
+      match:
+        title: ".*"
+      apply:
+        skip: true

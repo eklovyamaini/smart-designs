@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Metadata Manager — Confluence</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* ── Page-specific styles ─────────────────────────────────────────────── */
+    .nav-tabs {
+      display: flex;
+      gap: 0.25rem;
+    }
+    .nav-tab {
+      padding: 0.375rem 0.875rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--color-text-muted);
+      text-decoration: none;
+      transition: background var(--transition), color var(--transition);
+    }
+    .nav-tab:hover { background: var(--color-bg); color: var(--color-text); }
+    .nav-tab.active {
+      background: var(--color-primary-bg);
+      color: var(--color-primary);
+      font-weight: 600;
+    }
+
+    .scope-textarea {
+      width: 100%;
+      min-height: 120px;
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      padding: 0.625rem 0.75rem;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-surface);
+      color: var(--color-text);
+      resize: vertical;
+      line-height: 1.5;
+    }
+    .scope-textarea:focus {
+      outline: none;
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    .scope-textarea::placeholder { color: var(--color-text-light); }
+
+    .force-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      font-size: 0.875rem;
+      color: var(--color-text-muted);
+    }
+    .force-row input[type="checkbox"] { accent-color: var(--color-primary); }
+
+    /* Preview table */
+    .preview-table-wrap { overflow-x: auto; margin-top: 1rem; }
+    .preview-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8125rem;
+    }
+    .preview-table th {
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+      background: var(--color-bg);
+      border-bottom: 2px solid var(--color-border);
+      font-weight: 600;
+      color: var(--color-text-muted);
+      white-space: nowrap;
+    }
+    .preview-table td {
+      padding: 0.4375rem 0.75rem;
+      border-bottom: 1px solid var(--color-border);
+      vertical-align: middle;
+    }
+    .preview-table tr:last-child td { border-bottom: none; }
+    .preview-table tr:hover td { background: var(--color-bg); }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.1875rem 0.5rem;
+      border-radius: 99px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .status-badge.has-blocks  { background: var(--color-success-bg); color: var(--color-success); }
+    .status-badge.will-apply  { background: var(--color-primary-bg); color: var(--color-primary); }
+    .status-badge.error       { background: var(--color-danger-bg);  color: var(--color-danger); }
+
+    /* Progress log */
+    .progress-log {
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      line-height: 1.6;
+      max-height: 320px;
+      overflow-y: auto;
+      padding: 0.75rem 1rem;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: var(--radius-sm);
+      margin-top: 1rem;
+    }
+    .log-line { margin: 0; white-space: pre-wrap; word-break: break-all; }
+    .log-line.applied    { color: #34d399; }
+    .log-line.skipped    { color: #94a3b8; }
+    .log-line.error      { color: #f87171; }
+    .log-line.info       { color: #60a5fa; }
+    .log-line.labeled    { color: #34d399; }
+    .log-line.unchanged  { color: #94a3b8; }
+
+    /* Auto-Label section */
+    .auto-label-section {
+      margin-top: 2rem;
+    }
+    .auto-label-status {
+      font-size: 0.875rem;
+      color: var(--color-text-muted);
+      margin-left: 0.75rem;
+    }
+
+    .summary-bar {
+      display: flex;
+      gap: 1.25rem;
+      padding: 0.75rem 1rem;
+      background: var(--color-bg);
+      border-radius: var(--radius-sm);
+      margin-top: 0.75rem;
+      font-size: 0.875rem;
+    }
+    .summary-item { display: flex; align-items: center; gap: 0.375rem; }
+    .summary-num  { font-weight: 700; font-size: 1rem; }
+    .summary-num.applied { color: var(--color-success); }
+    .summary-num.skipped { color: var(--color-text-muted); }
+    .summary-num.error   { color: var(--color-danger); }
+
+    .preview-count {
+      font-size: 0.8125rem;
+      color: var(--color-text-muted);
+      margin-top: 0.5rem;
+    }
+
+    /* Tracker section */
+    .tracker-section {
+      margin-top: 1.5rem;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+    }
+    .tracker-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1rem;
+      background: var(--color-bg);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--color-text);
+      border: none;
+      width: 100%;
+      text-align: left;
+    }
+    .tracker-toggle:hover { background: var(--color-border); }
+    .tracker-toggle-arrow { transition: transform 0.2s; font-size: 0.75rem; color: var(--color-text-muted); }
+    .tracker-toggle.open .tracker-toggle-arrow { transform: rotate(90deg); }
+    .tracker-body {
+      padding: 1rem;
+      border-top: 1px solid var(--color-border);
+      display: none;
+    }
+    .tracker-body.open { display: block; }
+    .tracker-result {
+      margin-top: 0.75rem;
+      font-size: 0.875rem;
+    }
+    .tracker-result a { color: var(--color-primary); }
+    .tracker-result.error { color: var(--color-danger); }
+  </style>
+</head>
+<body>
+
+<!-- ── App Header ──────────────────────────────────────────────────────────── -->
+<header class="app-header">
+  <h1 class="app-title">Confluence Tools</h1>
+  <nav class="nav-tabs" aria-label="Tool navigation">
+    <a class="nav-tab" href="/">&#128196; Word → Confluence</a>
+    <a class="nav-tab active" href="/metadata">&#128203; Metadata Manager</a>
+  </nav>
+</header>
+
+<main class="app-main">
+
+  <!-- ── STEP 1: Configure Scope ─────────────────────────────────────────── -->
+  <section id="step-1" class="step-panel active">
+    <div class="card">
+      <h2 class="card-title">Configure Scope</h2>
+      <p class="card-subtitle">
+        Paste the Confluence page URLs of the <strong>parent pages</strong> whose
+        descendants should receive metadata blocks. One URL per line.
+        All child pages at any depth under each parent will be included.
+      </p>
+
+      <!-- Confluence connection (mirrors the migration tool's Global Settings) -->
+      <div class="global-settings" style="margin-bottom:1.5rem;">
+        <div class="settings-section-header">
+          <span class="settings-section-label">Confluence Connection</span>
+          <span class="defaults-source-badge hidden" id="defaults-source-badge" title="Values loaded from defaults.yaml">
+            &#128196; from defaults.yaml
+          </span>
+        </div>
+        <div class="settings-row settings-row-wide">
+          <label class="field-label" for="meta-base-url">Base URL</label>
+          <input type="url" id="meta-base-url" class="field-input" placeholder="https://myorg.atlassian.net">
+        </div>
+        <div class="settings-row settings-row-wide">
+          <label class="field-label" for="meta-user">User (email)</label>
+          <input type="email" id="meta-user" class="field-input" placeholder="user@example.com">
+        </div>
+        <div class="settings-row settings-row-wide">
+          <label class="field-label" for="meta-api-token">API Token</label>
+          <input type="password" id="meta-api-token" class="field-input" placeholder="ATATT3x…">
+        </div>
+        <div class="settings-row settings-row-wide">
+          <label class="field-label" for="meta-default-approvers">
+            Default Approvers
+            <span class="field-hint">pre-filled on every page — e.g. John Smith, Jane Doe</span>
+          </label>
+          <input type="text" id="meta-default-approvers" class="field-input"
+                 placeholder="Leave blank to set manually on each page">
+        </div>
+      </div>
+
+      <!-- Parent page URL list -->
+      <label class="field-label" for="parent-urls" style="margin-bottom:0.375rem;display:block;">
+        Parent Page URLs <span class="field-hint">(one per line)</span>
+      </label>
+      <textarea
+        id="parent-urls"
+        class="scope-textarea"
+        placeholder="https://myorg.atlassian.net/wiki/spaces/DS/pages/123456/My-Parent-Page&#10;https://myorg.atlassian.net/wiki/spaces/DS/pages/789012/Another-Parent"
+        spellcheck="false"
+      ></textarea>
+
+      <div class="force-row">
+        <input type="checkbox" id="force-apply" name="force">
+        <label for="force-apply">
+          Force re-apply — overwrite metadata blocks on pages that already have them
+        </label>
+      </div>
+
+      <!-- ── Review Tracking Page ──────────────────────────────────────────── -->
+      <div class="tracker-section">
+        <button class="tracker-toggle" id="tracker-toggle" type="button">
+          <span>&#128202; Review Tracking Page</span>
+          <span class="tracker-toggle-arrow">&#9658;</span>
+        </button>
+        <div class="tracker-body" id="tracker-body">
+          <p style="font-size:0.8125rem;color:var(--color-text-muted);margin-bottom:0.875rem;">
+            Creates (or updates) a Confluence page with the <strong>Page Properties Report</strong>
+            macro — a live spreadsheet of all pages' review status, module, approvers and more.
+          </p>
+          <div class="settings-row">
+            <label class="field-label" for="tracker-space-key">Space Key</label>
+            <input type="text" id="tracker-space-key" class="field-input field-narrow" placeholder="DS" value="DS">
+          </div>
+          <div class="settings-row settings-row-wide">
+            <label class="field-label" for="tracker-title">Tracker Page Title</label>
+            <input type="text" id="tracker-title" class="field-input"
+                   value="DS Review Tracking Dashboard"
+                   placeholder="DS Review Tracking Dashboard">
+          </div>
+          <div class="settings-row settings-row-wide">
+            <label class="field-label" for="tracker-parent-id">
+              Parent Page ID
+              <span class="field-hint">optional — leave blank to place at space root</span>
+            </label>
+            <input type="text" id="tracker-parent-id" class="field-input field-narrow"
+                   placeholder="e.g. 123456789">
+          </div>
+          <div class="settings-row settings-row-wide">
+            <label class="field-label" for="tracker-label">
+              Tracking Label
+              <span class="field-hint">added to pages &amp; used by the live Page Properties Report</span>
+            </label>
+            <input type="text" id="tracker-label" class="field-input field-narrow"
+                   value="ds-tracked" placeholder="ds-tracked">
+          </div>
+          <button class="btn btn-primary" id="create-tracker-btn" type="button"
+                  style="margin-top:0.75rem;">
+            &#128202; Create / Update Tracker
+          </button>
+          <div class="tracker-result hidden" id="tracker-result"></div>
+        </div>
+      </div>
+
+      <div class="step-footer">
+        <span class="step-hint" id="step1-hint"></span>
+        <button class="btn btn-primary" id="preview-btn" type="button">
+          Preview Scope &#8594;
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── STEP 2: Preview ─────────────────────────────────────────────────── -->
+  <section id="step-2" class="step-panel hidden">
+    <div class="card">
+      <h2 class="card-title">Preview Scope</h2>
+
+      <p class="preview-count" id="preview-summary"></p>
+
+      <div class="preview-table-wrap">
+        <table class="preview-table" id="preview-table">
+          <thead>
+            <tr>
+              <th>Page Title</th>
+              <th>Module</th>
+              <th>Page URL</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="preview-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="step-footer">
+        <button class="btn btn-ghost" id="back-btn" type="button">&#8592; Back</button>
+        <button class="btn btn-primary" id="apply-btn" type="button">
+          Apply Metadata Blocks &#8594;
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── STEP 3: Apply Progress ──────────────────────────────────────────── -->
+  <section id="step-3" class="step-panel hidden">
+    <div class="card">
+      <h2 class="card-title">Applying Metadata</h2>
+
+      <div class="progress-log" id="progress-log" aria-live="polite"></div>
+
+      <div class="summary-bar hidden" id="summary-bar">
+        <div class="summary-item">
+          <span class="summary-num applied" id="sum-applied">0</span>
+          <span>applied</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-num skipped" id="sum-skipped">0</span>
+          <span>skipped</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-num error" id="sum-errors">0</span>
+          <span>errors</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-num" id="sum-total">0</span>
+          <span>total</span>
+        </div>
+      </div>
+
+      <div class="step-footer">
+        <button class="btn btn-ghost hidden" id="restart-btn" type="button">
+          &#8592; Start Over
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Auto-Label Pages ──────────────────────────────────────────────────── -->
+  <section id="auto-label-section" class="auto-label-section">
+    <div class="card">
+      <h2 class="card-title">🏷️ Auto-Label Pages</h2>
+      <p class="card-desc" style="margin-bottom:1rem; color: var(--color-text-muted); font-size:0.875rem;">
+        Adds smart Confluence labels to pages based on their title and module hierarchy.
+        Labels added: <strong>module name</strong> (e.g. <code>contract-budget</code>)
+        and <strong>page type</strong> (e.g. <code>business-process</code>,
+        <code>use-case</code>, <code>screen-designs</code>).
+        Existing labels are never duplicated.
+      </p>
+
+      <div class="field-row" style="margin-bottom:1rem;">
+        <label class="field-label" for="auto-label-parent-urls">
+          Parent Page URLs
+          <span class="field-hint" style="font-weight:400; color:var(--color-text-muted); margin-left:0.25rem;">(one per line — labels all descendant pages)</span>
+        </label>
+        <textarea id="auto-label-parent-urls" class="field-input" rows="4"
+          style="width:100%; resize:vertical; font-family:var(--font-mono); font-size:0.8125rem;"
+          placeholder="https://org.atlassian.net/wiki/spaces/DS/pages/123/..."></textarea>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+        <button type="button" class="btn btn-primary" id="auto-label-btn">
+          🏷️ Add Labels
+        </button>
+        <span class="auto-label-status" id="auto-label-status"></span>
+      </div>
+
+      <div id="auto-label-log" class="progress-log hidden" style="margin-top:1rem;"></div>
+    </div>
+  </section>
+
+</main>
+
+<script src="/static/metadata.js"></script>
+</body>
+</html>

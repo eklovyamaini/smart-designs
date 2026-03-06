@@ -1,0 +1,9 @@
+# Local defaults (may contain credentials — do not commit)
+frontend/defaults.yaml
+
+# Migration database
+*.db
+
+# Uploaded temp files
+__pycache__/
+*.py[cod]

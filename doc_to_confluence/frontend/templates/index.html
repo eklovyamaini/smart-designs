@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Word to Confluence Migration</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ── App Header & Step Indicator ─────────────────────────────────────────── -->
+<header class="app-header">
+  <h1 class="app-title">Confluence Tools</h1>
+  <nav class="nav-tabs" aria-label="Tool navigation" style="display:flex;gap:0.25rem;margin-bottom:0.25rem;">
+    <a class="nav-tab active" href="/" style="padding:0.375rem 0.875rem;border-radius:4px;font-size:0.8125rem;font-weight:600;text-decoration:none;background:#eff6ff;color:#3b82f6;">&#128196; Word → Confluence</a>
+    <a class="nav-tab" href="/metadata" style="padding:0.375rem 0.875rem;border-radius:4px;font-size:0.8125rem;font-weight:500;text-decoration:none;color:#64748b;">&#128203; Metadata Manager</a>
+  </nav>
+  <nav class="step-indicator" aria-label="Migration steps">
+    <div class="step-dot active" data-step="1">
+      <span class="step-num">1</span>
+      <span class="step-label">Upload &amp; Parse</span>
+    </div>
+    <div class="step-connector"></div>
+    <div class="step-dot" data-step="2">
+      <span class="step-num">2</span>
+      <span class="step-label">Build Rules</span>
+    </div>
+    <div class="step-connector"></div>
+    <div class="step-dot" data-step="3">
+      <span class="step-num">3</span>
+      <span class="step-label">Run &amp; Results</span>
+    </div>
+  </nav>
+</header>
+
+<main class="app-main">
+
+  <!-- ── STEP 1: Upload & Parse ─────────────────────────────────────────────── -->
+  <section id="step-1" class="step-panel active">
+    <div class="card">
+      <h2 class="card-title">Upload Word Document</h2>
+
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="file-input" accept=".docx" class="file-input-hidden">
+        <div class="upload-icon">&#128196;</div>
+        <p class="upload-hint">
+          Drop a <strong>.docx</strong> file here or
+          <button class="link-btn" id="browse-btn" type="button">browse</button>
+        </p>
+        <p class="upload-sub">Microsoft Word documents only (.docx)</p>
+      </div>
+
+      <div id="upload-status" class="upload-status hidden"></div>
+
+      <!-- Parsed sections tree (shown after successful parse) -->
+      <div id="sections-panel" class="hidden">
+        <div class="sections-header">
+          <h3>Document Sections <span id="section-count" class="badge badge-info">0</span></h3>
+          <button class="btn btn-sm btn-ghost" id="expand-all-btn" type="button">Expand All</button>
+        </div>
+        <div id="sections-tree" class="sections-tree"></div>
+      </div>
+
+      <div class="step-footer">
+        <span class="step-hint" id="step1-hint"></span>
+        <button class="btn btn-primary" id="step1-next" type="button" disabled>
+          Next: Build Rules →
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── STEP 2: Build Rules ────────────────────────────────────────────────── -->
+  <section id="step-2" class="step-panel hidden">
+    <div class="card">
+      <h2 class="card-title">Configure Migration Rules</h2>
+
+      <!-- Global Settings: Confluence credentials + LLM -->
+      <div class="global-settings">
+
+        <div class="settings-section-header">
+          <span class="settings-section-label">Confluence Connection</span>
+          <span class="defaults-source-badge hidden" id="defaults-source-badge" title="Values loaded from defaults.yaml">
+            &#128196; from defaults.yaml
+          </span>
+        </div>
+        <div class="settings-row settings-row-wide">
+          <label class="field-label" for="global-base-url">Base URL</label>
+          <input type="url" id="global-base-url" class="field-input" placeholder="https://myorg.atlassian.net">
+        </div>
+        <div class="settings-row settings-row-wide">
+          <label class="field-label" for="global-user">User (email)</label>
+          <input type="email" id="global-user" class="field-input" placeholder="user@example.com">
+        </div>
+        <div class="settings-row settings-row-wide">
+          <label class="field-label" for="global-api-token">API Token</label>
+          <input type="password" id="global-api-token" class="field-input" placeholder="ATATT3x… (leave blank to keep saved value)">
+        </div>
+        <div class="settings-row">
+          <label class="field-label" for="global-space-key">
+            Default Space Key
+            <span class="field-hint">auto-filled in new rule rows</span>
+          </label>
+          <input type="text" id="global-space-key" class="field-input field-narrow" placeholder="PROJ">
+        </div>
+
+        <div class="settings-section-label settings-section-label--spaced">LLM Settings</div>
+        <div class="settings-row">
+          <label class="field-label" for="llm-model">Model</label>
+          <input type="text" id="llm-model" class="field-input" value="gpt-oss:20b" placeholder="gpt-oss:20b">
+        </div>
+        <div class="settings-row">
+          <label class="field-label" for="llm-temperature">Temperature</label>
+          <input type="number" id="llm-temperature" class="field-input field-narrow"
+                 value="0.1" min="0" max="2" step="0.1">
+        </div>
+
+        <div class="settings-section-label settings-section-label--spaced">PlantUML</div>
+        <div class="settings-row">
+          <label class="field-label" for="plantuml-theme">
+            Theme
+            <span class="field-hint">applied when rendering diagrams to PNG</span>
+          </label>
+          <input type="text" id="plantuml-theme" class="field-input field-narrow"
+                 value="cerulean" placeholder="cerulean"
+                 list="plantuml-theme-suggestions">
+          <datalist id="plantuml-theme-suggestions">
+            <option value="cerulean">
+            <option value="cerulean-outline">
+            <option value="plain">
+            <option value="materia">
+            <option value="materia-outline">
+            <option value="superhero">
+            <option value="superhero-outline">
+            <option value="sketchy">
+            <option value="sketchy-outline">
+            <option value="spacelab">
+            <option value="united">
+            <option value="toy">
+            <option value="none">
+          </datalist>
+        </div>
+
+        <!-- Save Defaults row -->
+        <div class="settings-save-row">
+          <button class="btn btn-save-defaults" id="save-defaults-btn" type="button">
+            &#128190; Save as Defaults
+          </button>
+          <span class="save-defaults-status" id="save-defaults-status"></span>
+        </div>
+
+        <!-- Section Defaulting Rules — compact trigger row -->
+        <div class="section-rules-trigger-row">
+          <button class="section-rules-trigger-btn" id="section-rules-open-btn" type="button">
+            &#9881;&nbsp; Section Defaulting Rules
+            <span class="section-rules-badge" id="section-rules-badge"></span>
+            <span class="section-rules-trigger-arrow">&#8599;</span>
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Per-section rule rows (rendered by JS) -->
+      <div id="rules-container" class="rules-container"></div>
+
+      <div class="step-footer">
+        <button class="btn btn-ghost" id="step2-back" type="button">← Back</button>
+        <div class="step-footer-right">
+          <button class="btn btn-secondary" id="download-config-btn" type="button">
+            &#8615; Download Config YAML
+          </button>
+          <button class="btn btn-primary" id="step2-next" type="button">
+            Run Migration →
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── STEP 3: Run & Results ──────────────────────────────────────────────── -->
+  <section id="step-3" class="step-panel hidden">
+    <div class="card">
+      <h2 class="card-title">Run Migration</h2>
+
+      <!-- Controls -->
+      <div class="run-controls">
+        <label class="toggle-label">
+          <input type="checkbox" id="dry-run-toggle" checked>
+          <span class="toggle-slider"></span>
+          <span class="toggle-text">Dry Run Mode <span class="toggle-note">(no Confluence writes)</span></span>
+        </label>
+        <label class="toggle-label" id="overwrite-toggle-label">
+          <input type="checkbox" id="overwrite-toggle" disabled>
+          <span class="toggle-slider"></span>
+          <span class="toggle-text">Overwrite Existing Pages <span class="toggle-note">(delete before re-create)</span></span>
+        </label>
+        <label class="toggle-label" id="pre-delete-toggle-label">
+          <input type="checkbox" id="pre-delete-toggle" checked>
+          <span class="toggle-slider"></span>
+          <span class="toggle-text">Delete existing module pages <span class="toggle-note">(wipe module folder before migrating)</span></span>
+        </label>
+        <button class="btn btn-primary" id="run-migration-btn" type="button">
+          &#9654; Start Migration
+        </button>
+      </div>
+
+      <!-- Progress bar -->
+      <div id="progress-panel" class="progress-panel hidden">
+        <div class="progress-bar-wrap">
+          <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+        </div>
+        <p class="progress-label" id="progress-label">Preparing...</p>
+      </div>
+
+      <!-- Live results feed -->
+      <div id="results-feed" class="results-feed hidden"></div>
+
+      <!-- Summary (shown after complete event) -->
+      <div id="summary-panel" class="summary-panel hidden">
+        <h3 class="summary-title">Migration Complete</h3>
+        <div class="summary-stats">
+          <div class="stat-box stat-total">
+            <span class="stat-num" id="stat-total">0</span>
+            <span class="stat-label">Total</span>
+          </div>
+          <div class="stat-box stat-success">
+            <span class="stat-num" id="stat-success">0</span>
+            <span class="stat-label">Success</span>
+          </div>
+          <div class="stat-box stat-failed">
+            <span class="stat-num" id="stat-failed">0</span>
+            <span class="stat-label">Failed</span>
+          </div>
+          <div class="stat-box stat-skipped">
+            <span class="stat-num" id="stat-skipped">0</span>
+            <span class="stat-label">Skipped</span>
+          </div>
+        </div>
+        <div class="summary-actions">
+          <button class="btn btn-secondary" id="download-report-btn" type="button">
+            &#8615; Download JSON Report
+          </button>
+          <button class="btn btn-ghost" id="step3-back" type="button">
+            ← Back to Rules
+          </button>
+        </div>
+      </div>
+
+      <div class="step-footer">
+        <button class="btn btn-ghost" id="step3-back-top" type="button">← Back</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ── Section Defaulting Rules modal ──────────────────────────────────────── -->
+<dialog class="section-rules-modal" id="section-rules-modal">
+  <div class="section-rules-modal-header">
+    <span class="section-rules-modal-title">
+      &#9881;&nbsp; Section Defaulting Rules
+    </span>
+    <button class="section-rules-modal-close" id="section-rules-close-btn" type="button" aria-label="Close">&#10005;</button>
+  </div>
+  <p class="section-rules-hint">
+    Rules are evaluated top-to-bottom — <strong>first match wins</strong>.
+    Match by <code>level</code> (1=H1, 2=H2, 3=H3) and/or <code>title</code> (regex, case-insensitive).
+    Use <code>apply.folder_only: true</code> to mark a folder section,
+    <code>apply.llm_enabled: false</code> to skip the LLM,
+    and <code>apply.llm_tasks</code> to pre-select specific tasks.
+  </p>
+  <textarea id="section-rules-editor" class="section-rules-editor" spellcheck="false"></textarea>
+  <div class="section-rules-modal-footer">
+    <span class="section-rules-status" id="section-rules-status"></span>
+    <div class="section-rules-modal-footer-actions">
+      <button class="btn btn-ghost btn-sm" id="section-rules-cancel-btn" type="button">Cancel</button>
+      <button class="btn btn-sm btn-primary" id="section-rules-save-btn" type="button">
+        &#128190; Save &amp; Apply
+      </button>
+    </div>
+  </div>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
