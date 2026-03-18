@@ -116,15 +116,67 @@
     .log-line.labeled    { color: #34d399; }
     .log-line.unchanged  { color: #94a3b8; }
 
-    /* Auto-Label section */
-    .auto-label-section {
-      margin-top: 2rem;
+    /* Auto-detect module pages row */
+    .module-discover-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+      flex-wrap: wrap;
     }
-    .auto-label-status {
-      font-size: 0.875rem;
+    .module-discover-row .field-label { margin-bottom: 0.25rem; }
+    .module-discover-row .field-narrow { width: 7rem; }
+    .discover-result {
+      font-size: 0.8125rem;
       color: var(--color-text-muted);
-      margin-left: 0.75rem;
+      margin-top: 0.375rem;
     }
+    .discover-result.error { color: var(--color-danger); }
+
+    /* Operations checkboxes */
+    .ops-group {
+      margin-top: 1.25rem;
+      padding: 0.875rem 1rem;
+      background: var(--color-bg);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+    }
+    .ops-group-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--color-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.625rem;
+    }
+    .ops-checks { display: flex; flex-direction: column; gap: 0.5rem; }
+    .ops-check-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+      color: var(--color-text);
+    }
+    .ops-check-row input[type="checkbox"] {
+      accent-color: var(--color-primary);
+      width: 1rem;
+      height: 1rem;
+      flex-shrink: 0;
+    }
+    .ops-check-row .ops-hint {
+      font-size: 0.75rem;
+      color: var(--color-text-muted);
+    }
+    .ops-label-sub {
+      margin-left: 1.5rem;
+      margin-top: 0.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    .ops-label-sub label { font-size: 0.8125rem; color: var(--color-text-muted); white-space: nowrap; }
+    .ops-label-sub input { width: 9rem; }
 
     .summary-bar {
       display: flex;
@@ -147,39 +199,25 @@
       margin-top: 0.5rem;
     }
 
-    /* Tracker section */
-    .tracker-section {
-      margin-top: 1.5rem;
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      overflow: hidden;
+    /* Tracker sub-fields (shown when Create Tracker checkbox is on) */
+    .ops-tracker-sub {
+      margin-left: 1.5rem;
+      margin-top: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
     }
-    .tracker-toggle {
+    .ops-tracker-sub .tracker-row {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 0.75rem 1rem;
-      background: var(--color-bg);
-      cursor: pointer;
-      font-size: 0.875rem;
-      font-weight: 600;
-      color: var(--color-text);
-      border: none;
-      width: 100%;
-      text-align: left;
+      gap: 0.5rem;
+      flex-wrap: wrap;
     }
-    .tracker-toggle:hover { background: var(--color-border); }
-    .tracker-toggle-arrow { transition: transform 0.2s; font-size: 0.75rem; color: var(--color-text-muted); }
-    .tracker-toggle.open .tracker-toggle-arrow { transform: rotate(90deg); }
-    .tracker-body {
-      padding: 1rem;
-      border-top: 1px solid var(--color-border);
-      display: none;
-    }
-    .tracker-body.open { display: block; }
+    .ops-tracker-sub label { font-size: 0.8125rem; color: var(--color-text-muted); white-space: nowrap; min-width: 5.5rem; }
+    .ops-tracker-sub input { font-size: 0.8125rem; }
     .tracker-result {
-      margin-top: 0.75rem;
-      font-size: 0.875rem;
+      margin-top: 0.5rem;
+      font-size: 0.8125rem;
     }
     .tracker-result a { color: var(--color-primary); }
     .tracker-result.error { color: var(--color-danger); }
@@ -238,9 +276,24 @@
         </div>
       </div>
 
+      <!-- ── Auto-discover Module pages ──────────────────────────────────── -->
+      <div class="module-discover-row">
+        <div>
+          <label class="field-label" for="discover-space-key" style="display:block;margin-bottom:0.25rem;">
+            Space Key
+          </label>
+          <input type="text" id="discover-space-key" class="field-input field-narrow"
+                 placeholder="DS" style="width:6rem;">
+        </div>
+        <button type="button" class="btn btn-ghost" id="discover-btn" style="margin-bottom:0;">
+          🔍 Find Module Pages
+        </button>
+        <span class="discover-result hidden" id="discover-result"></span>
+      </div>
+
       <!-- Parent page URL list -->
       <label class="field-label" for="parent-urls" style="margin-bottom:0.375rem;display:block;">
-        Parent Page URLs <span class="field-hint">(one per line)</span>
+        Parent Page URLs <span class="field-hint">(one per line — or use Find Module Pages above)</span>
       </label>
       <textarea
         id="parent-urls"
@@ -249,56 +302,71 @@
         spellcheck="false"
       ></textarea>
 
-      <div class="force-row">
+      <!-- ── Operations ────────────────────────────────────────────────────── -->
+      <div class="ops-group">
+        <div class="ops-group-label">Operations to run</div>
+        <div class="ops-checks">
+
+          <label class="ops-check-row">
+            <input type="checkbox" id="op-properties" checked>
+            <span>
+              📋 Page Properties Table
+              <span class="ops-hint">— injects the metadata table (Author, Status, Module…)</span>
+            </span>
+          </label>
+
+          <label class="ops-check-row">
+            <input type="checkbox" id="op-change-history" checked>
+            <span>
+              🕓 Change History Macro
+              <span class="ops-hint">— adds the collapsible native Confluence version history</span>
+            </span>
+          </label>
+
+          <label class="ops-check-row">
+            <input type="checkbox" id="op-labels" checked>
+            <span>
+              🏷️ Auto-label Pages
+              <span class="ops-hint">— adds module + page-type labels; also adds tracking label</span>
+            </span>
+          </label>
+          <!-- Tracking label sub-field — shown only when labels checkbox is on -->
+          <div class="ops-label-sub" id="op-labels-sub">
+            <label for="tracker-label-inline">Tracking label:</label>
+            <input type="text" id="tracker-label-inline" class="field-input"
+                   value="ds-tracked" placeholder="ds-tracked" style="width:9rem;">
+          </div>
+
+          <label class="ops-check-row" style="margin-top:0.25rem;">
+            <input type="checkbox" id="op-tracker">
+            <span>
+              📊 Create / Update Review Dashboard
+              <span class="ops-hint">— generates a live Page Properties Report page</span>
+            </span>
+          </label>
+          <!-- Tracker config — shown only when tracker checkbox is on -->
+          <div class="ops-tracker-sub" id="op-tracker-sub" style="display:none;">
+            <div class="tracker-row">
+              <label for="tracker-title">Page Title</label>
+              <input type="text" id="tracker-title" class="field-input"
+                     value="Review Dashboard" placeholder="Review Dashboard"
+                     style="width:16rem;">
+              <button class="btn btn-primary btn-sm" id="create-tracker-btn" type="button"
+                      style="font-size:0.8125rem;padding:0.3rem 0.75rem;">
+                &#128202; Create / Update
+              </button>
+            </div>
+            <div class="tracker-result hidden" id="tracker-result"></div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="force-row" style="margin-top:0.875rem;">
         <input type="checkbox" id="force-apply" name="force">
         <label for="force-apply">
           Force re-apply — overwrite metadata blocks on pages that already have them
         </label>
-      </div>
-
-      <!-- ── Review Tracking Page ──────────────────────────────────────────── -->
-      <div class="tracker-section">
-        <button class="tracker-toggle" id="tracker-toggle" type="button">
-          <span>&#128202; Review Tracking Page</span>
-          <span class="tracker-toggle-arrow">&#9658;</span>
-        </button>
-        <div class="tracker-body" id="tracker-body">
-          <p style="font-size:0.8125rem;color:var(--color-text-muted);margin-bottom:0.875rem;">
-            Creates (or updates) a Confluence page with the <strong>Page Properties Report</strong>
-            macro — a live spreadsheet of all pages' review status, module, approvers and more.
-          </p>
-          <div class="settings-row">
-            <label class="field-label" for="tracker-space-key">Space Key</label>
-            <input type="text" id="tracker-space-key" class="field-input field-narrow" placeholder="DS" value="DS">
-          </div>
-          <div class="settings-row settings-row-wide">
-            <label class="field-label" for="tracker-title">Tracker Page Title</label>
-            <input type="text" id="tracker-title" class="field-input"
-                   value="DS Review Tracking Dashboard"
-                   placeholder="DS Review Tracking Dashboard">
-          </div>
-          <div class="settings-row settings-row-wide">
-            <label class="field-label" for="tracker-parent-id">
-              Parent Page ID
-              <span class="field-hint">optional — leave blank to place at space root</span>
-            </label>
-            <input type="text" id="tracker-parent-id" class="field-input field-narrow"
-                   placeholder="e.g. 123456789">
-          </div>
-          <div class="settings-row settings-row-wide">
-            <label class="field-label" for="tracker-label">
-              Tracking Label
-              <span class="field-hint">added to pages &amp; used by the live Page Properties Report</span>
-            </label>
-            <input type="text" id="tracker-label" class="field-input field-narrow"
-                   value="ds-tracked" placeholder="ds-tracked">
-          </div>
-          <button class="btn btn-primary" id="create-tracker-btn" type="button"
-                  style="margin-top:0.75rem;">
-            &#128202; Create / Update Tracker
-          </button>
-          <div class="tracker-result hidden" id="tracker-result"></div>
-        </div>
       </div>
 
       <div class="step-footer">
@@ -334,7 +402,7 @@
       <div class="step-footer">
         <button class="btn btn-ghost" id="back-btn" type="button">&#8592; Back</button>
         <button class="btn btn-primary" id="apply-btn" type="button">
-          Apply Metadata Blocks &#8594;
+          Run Selected Operations &#8594;
         </button>
       </div>
     </div>
@@ -374,38 +442,6 @@
     </div>
   </section>
 
-  <!-- ── Auto-Label Pages ──────────────────────────────────────────────────── -->
-  <section id="auto-label-section" class="auto-label-section">
-    <div class="card">
-      <h2 class="card-title">🏷️ Auto-Label Pages</h2>
-      <p class="card-desc" style="margin-bottom:1rem; color: var(--color-text-muted); font-size:0.875rem;">
-        Adds smart Confluence labels to pages based on their title and module hierarchy.
-        Labels added: <strong>module name</strong> (e.g. <code>contract-budget</code>)
-        and <strong>page type</strong> (e.g. <code>business-process</code>,
-        <code>use-case</code>, <code>screen-designs</code>).
-        Existing labels are never duplicated.
-      </p>
-
-      <div class="field-row" style="margin-bottom:1rem;">
-        <label class="field-label" for="auto-label-parent-urls">
-          Parent Page URLs
-          <span class="field-hint" style="font-weight:400; color:var(--color-text-muted); margin-left:0.25rem;">(one per line — labels all descendant pages)</span>
-        </label>
-        <textarea id="auto-label-parent-urls" class="field-input" rows="4"
-          style="width:100%; resize:vertical; font-family:var(--font-mono); font-size:0.8125rem;"
-          placeholder="https://org.atlassian.net/wiki/spaces/DS/pages/123/..."></textarea>
-      </div>
-
-      <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
-        <button type="button" class="btn btn-primary" id="auto-label-btn">
-          🏷️ Add Labels
-        </button>
-        <span class="auto-label-status" id="auto-label-status"></span>
-      </div>
-
-      <div id="auto-label-log" class="progress-log hidden" style="margin-top:1rem;"></div>
-    </div>
-  </section>
 
 </main>
 

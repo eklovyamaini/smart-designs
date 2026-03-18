@@ -29,6 +29,7 @@ class ConfluenceTargetModel(BaseModel):
     page_title: Optional[str] = None   # explicit title override; None = use section heading
     table_rows_to_pages: bool = False  # create one page per data row in section tables
     row_page_title: Optional[str] = None  # page title template; {col_0} … filled per row
+    use_case_page_title: Optional[str] = None  # page title template for per-use-case child pages; {use_case_name} is filled per use case
     """
     When True, this section is treated purely as a folder definition.
     No Confluence page is created for the section itself.
@@ -74,6 +75,7 @@ class LLMConfigModel(BaseModel):
         default_factory=list
     )
     expand_tables_to_pages: bool = False  # create one Confluence page per table row (section + all subsections); each page shows the row transposed into a 2-column header/value table
+    expand_usecases_to_pages: bool = False  # split "Use Case:" blocks into individual child Confluence pages, each with the use case text + its PlantUML diagram
 
     @field_validator("tasks")
     @classmethod
@@ -133,6 +135,7 @@ class SectionMappingModel(BaseModel):
 class MigrationConfigModel(BaseModel):
     llm_model: str = "gpt-oss:20b"
     llm_temperature: float = 0.1
+    max_llm_workers: int = 4
     plantuml_theme: str = "cerulean"
     confluence_base_url: str
     confluence_user: str

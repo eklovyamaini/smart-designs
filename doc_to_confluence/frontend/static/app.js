@@ -585,10 +585,14 @@ function renderRules(sections) {
 
         <!-- Table Expansion -->
         <fieldset class="rule-fieldset full-width">
-          <legend>Table Expansion</legend>
+          <legend>Expansion</legend>
           <label class="task-chip" title="Create one Confluence page per table row (section + subsections); each page shows the row as a transposed header / value table">
             <input type="checkbox" class="rule-expand-tables-to-pages"> Expand tables to pages
             <span class="task-hint">(section + subsections)</span>
+          </label>
+          <label class="task-chip" title="Split each 'Use Case:' block into its own Confluence child page with the use case text + LLM-generated PlantUML diagram">
+            <input type="checkbox" class="rule-expand-usecases-to-pages"> Expand use cases to pages
+            <span class="task-hint">(one page per Use Case: block)</span>
           </label>
         </fieldset>
 
@@ -787,14 +791,22 @@ function renderRules(sections) {
         const expandChk = detail.querySelector('.rule-expand-tables-to-pages');
         if (expandChk) expandChk.checked = true;
       }
+
+      // expand_usecases_to_pages — check the chip checkbox and store use_case_page_title
+      if (sectionApply.expand_usecases_to_pages) {
+        const ucExpandChk = detail.querySelector('.rule-expand-usecases-to-pages');
+        if (ucExpandChk) ucExpandChk.checked = true;
+        if (sectionApply.use_case_page_title) {
+          detail.dataset.useCasePageTitle = sectionApply.use_case_page_title;
+        }
+      }
     }
 
-    // Default expand_tables_to_pages to true for "Page Elements" sections and subsections
-    // (applies when no rule has already set it)
-    if (underPageElements && !sectionApply?.expand_tables_to_pages) {
-      const expandChk = detail.querySelector('.rule-expand-tables-to-pages');
-      if (expandChk) expandChk.checked = true;
-    }
+    // Note: expand_tables_to_pages for "Page Elements" subsections is intentionally NOT
+    // defaulted here.  The expansion is driven by the "Page Elements folder" rule (rule 9)
+    // which sets expand_tables_to_pages: true on the folder itself.  Sub-sections like
+    // Collapsible Widgets and Documents are detail pages whose tables should appear as
+    // page content, not be further expanded into individual child pages.
 
     container.appendChild(detail);
   });
@@ -912,6 +924,7 @@ async function loadDefaults() {
     }
     if (d.default_space_key)       $('global-space-key').value  = d.default_space_key;
     if (d.llm_model)               $('llm-model').value         = d.llm_model;
+    if (d.max_llm_workers != null) $('llm-max-workers').value   = d.max_llm_workers;
     if (d.llm_temperature != null) $('llm-temperature').value   = d.llm_temperature;
     if (d.plantuml_theme)          $('plantuml-theme').value    = d.plantuml_theme;
 
@@ -956,6 +969,7 @@ async function saveDefaults() {
         confluence_api_token: ($('global-api-token')?.value  || '').trim(),
         default_space_key:    ($('global-space-key')?.value  || '').trim(),
         llm_model:            ($('llm-model')?.value         || '').trim() || 'gpt-oss:20b',
+        max_llm_workers:      parseInt($('llm-max-workers')?.value)  || 4,
         llm_temperature:      parseFloat($('llm-temperature')?.value) || 0.1,
         plantuml_theme:       ($('plantuml-theme')?.value    || '').trim() || 'cerulean',
       }),
@@ -1142,12 +1156,14 @@ function buildSectionMapping(row, section) {
   const llmEnabled         = row.querySelector('.rule-llm-enabled').checked;
   const checkedVals        = new Set([...row.querySelectorAll('.rule-task:checked')].map(c => c.value));
   const tasks              = TASK_ORDER.filter(t => checkedVals.has(t));
-  const matchType          = section.content_type === 'table' ? 'table' : 'heading';
-  const expandTablesToPages = row.querySelector('.rule-expand-tables-to-pages')?.checked || false;
+  const matchType              = section.content_type === 'table' ? 'table' : 'heading';
+  const expandTablesToPages    = row.querySelector('.rule-expand-tables-to-pages')?.checked || false;
+  const expandUsecasesToPages  = row.querySelector('.rule-expand-usecases-to-pages')?.checked || false;
 
-  const pageTitleOverride = (row.querySelector('.rule-page-title')?.value || '').trim() || null;
-  const tableRowsToPages  = row.dataset.tableRowsToPages === '1';
-  const rowPageTitle      = (row.dataset.rowPageTitle || '').trim() || null;
+  const pageTitleOverride  = (row.querySelector('.rule-page-title')?.value || '').trim() || null;
+  const tableRowsToPages   = row.dataset.tableRowsToPages === '1';
+  const rowPageTitle       = (row.dataset.rowPageTitle || '').trim() || null;
+  const useCasePageTitle   = (row.dataset.useCasePageTitle || '').trim() || null;
 
   return {
     match:      section.title,
@@ -1158,24 +1174,26 @@ function buildSectionMapping(row, section) {
     // "Screen Mockup" sections) from all resolving to the first match.
     section_id: section.id || null,
     confluence: {
-      space_key:           spaceKey,
-      folder_path:         folderPath,
-      parent_page_id:      parentId,
-      page_id:             pageId,
-      action:              action,
-      folder_only:         folderOnly,
-      page_title:          pageTitleOverride,   // null = use section heading
-      table_rows_to_pages: tableRowsToPages,
-      row_page_title:      rowPageTitle,
+      space_key:            spaceKey,
+      folder_path:          folderPath,
+      parent_page_id:       parentId,
+      page_id:              pageId,
+      action:               action,
+      folder_only:          folderOnly,
+      page_title:           pageTitleOverride,   // null = use section heading
+      table_rows_to_pages:  tableRowsToPages,
+      row_page_title:       rowPageTitle,
+      use_case_page_title:  useCasePageTitle,
     },
-    llm: { enabled: llmEnabled, tasks, expand_tables_to_pages: expandTablesToPages },
+    llm: { enabled: llmEnabled, tasks, expand_tables_to_pages: expandTablesToPages, expand_usecases_to_pages: expandUsecasesToPages },
   };
 }
 
 function collectConfig(enabledOnly = true) {
-  const llmModel      = ($('llm-model').value      || '').trim() || 'gpt-oss:20b';
+  const llmModel      = ($('llm-model').value        || '').trim() || 'gpt-oss:20b';
+  const llmMaxWorkers = parseInt($('llm-max-workers').value) || 4;
   const llmTemp       = parseFloat($('llm-temperature').value);
-  const plantumlTheme = ($('plantuml-theme').value || '').trim() || 'cerulean';
+  const plantumlTheme = ($('plantuml-theme').value   || '').trim() || 'cerulean';
   const creds         = getGlobalCredentials();
 
   if (!creds.base_url) {
@@ -1206,6 +1224,7 @@ function collectConfig(enabledOnly = true) {
 
   return {
     llm_model:            llmModel,
+    max_llm_workers:      llmMaxWorkers,
     llm_temperature:      isNaN(llmTemp) ? 0.1 : llmTemp,
     plantuml_theme:       plantumlTheme,
     confluence_base_url:  creds.base_url,
@@ -1878,6 +1897,10 @@ async function runMigration(config, dryRun, overwrite = false, preDelete = true)
  */
 function handleSSEEvent(event, totalMappings, completedCount) {
   switch (event.type) {
+
+    case 'status':
+      $('progress-label').textContent = esc(event.message || '');
+      break;
 
     case 'section_start':
       $('progress-label').textContent =

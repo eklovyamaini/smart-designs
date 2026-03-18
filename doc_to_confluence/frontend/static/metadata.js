@@ -12,6 +12,17 @@
 
 let _credentials = { baseUrl: "", user: "", apiToken: "" };
 
+// ─── Helpers: read operations checkboxes ─────────────────────────────────────
+
+function getSelectedOps() {
+  return {
+    properties:     document.getElementById("op-properties")?.checked     ?? true,
+    changeHistory:  document.getElementById("op-change-history")?.checked  ?? true,
+    labels:         document.getElementById("op-labels")?.checked          ?? true,
+    trackingLabel:  (document.getElementById("tracker-label-inline")?.value.trim()) || "ds-tracked",
+  };
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function showStep(n) {
@@ -56,9 +67,11 @@ async function loadDefaults() {
     // Never pre-fill the token visually; keep it in state only
     _credentials.apiToken = data.confluence_api_token || "";
 
-    // Pre-fill tracker space key from default_space_key
-    const spaceKeyEl = document.getElementById("tracker-space-key");
-    if (spaceKeyEl && data.default_space_key) spaceKeyEl.value = data.default_space_key;
+    // Pre-fill space key from default_space_key
+    const discoverSpaceKeyEl = document.getElementById("discover-space-key");
+    if (discoverSpaceKeyEl && data.default_space_key) {
+      discoverSpaceKeyEl.value = data.default_space_key;
+    }
 
     if (data.confluence_base_url || data.confluence_user) {
       badgeEl && badgeEl.classList.remove("hidden");
@@ -68,47 +81,108 @@ async function loadDefaults() {
   }
 }
 
-// ─── Tracker Panel Toggle ─────────────────────────────────────────────────────
+// ─── Auto-discover Module Pages ───────────────────────────────────────────────
 
-function initTrackerToggle() {
-  const btn  = document.getElementById("tracker-toggle");
-  const body = document.getElementById("tracker-body");
-  if (!btn || !body) return;
-
-  btn.addEventListener("click", () => {
-    const isOpen = body.classList.toggle("open");
-    btn.classList.toggle("open", isOpen);
-  });
-}
-
-// ─── Create / Update Tracker Page ────────────────────────────────────────────
-
-async function handleCreateTracker() {
+async function handleFindModulePages() {
   const baseUrl   = document.getElementById("meta-base-url").value.trim();
   const user      = document.getElementById("meta-user").value.trim();
   const apiToken  = document.getElementById("meta-api-token").value.trim() || _credentials.apiToken;
-  const spaceKey  = document.getElementById("tracker-space-key").value.trim();
-  const title     = document.getElementById("tracker-title").value.trim();
-  const parentId  = document.getElementById("tracker-parent-id").value.trim() || null;
-  const label     = (document.getElementById("tracker-label")?.value.trim()) || "ds-tracked";
-  const resultEl  = document.getElementById("tracker-result");
-  const btn       = document.getElementById("create-tracker-btn");
+  const spaceKey  = document.getElementById("discover-space-key").value.trim();
+  const btn       = document.getElementById("discover-btn");
+  const resultEl  = document.getElementById("discover-result");
+  const urlsEl    = document.getElementById("parent-urls");
 
   if (!baseUrl || !user || !apiToken) {
-    resultEl.className = "tracker-result error";
-    resultEl.textContent = "Please fill in all Confluence connection fields first.";
+    resultEl.className = "discover-result error";
+    resultEl.textContent = "Fill in Confluence connection fields first.";
     resultEl.classList.remove("hidden");
     return;
   }
   if (!spaceKey) {
-    resultEl.className = "tracker-result error";
-    resultEl.textContent = "Space Key is required.";
+    resultEl.className = "discover-result error";
+    resultEl.textContent = "Enter a Space Key.";
     resultEl.classList.remove("hidden");
     return;
   }
 
   btn.disabled = true;
-  btn.textContent = "Creating…";
+  btn.textContent = "⏳ Searching…";
+  resultEl.textContent = "";
+  resultEl.classList.add("hidden");
+
+  // Also sync to tracker space key if that field is empty
+  const trackerSpaceEl = document.getElementById("tracker-space-key");
+  if (trackerSpaceEl && !trackerSpaceEl.value.trim()) trackerSpaceEl.value = spaceKey;
+
+  try {
+    const params = new URLSearchParams({
+      space_key:             spaceKey,
+      confluence_base_url:   baseUrl,
+      confluence_user:       user,
+      confluence_api_token:  apiToken,
+    });
+    const resp = await fetch(`/metadata/find-module-pages?${params}`);
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      resultEl.className = "discover-result error";
+      resultEl.textContent = `Error: ${data.error || "Unknown error"}`;
+      resultEl.classList.remove("hidden");
+      return;
+    }
+
+    const pages = data.pages || [];
+    if (pages.length === 0) {
+      resultEl.className = "discover-result";
+      resultEl.textContent = `No pages ending with "- Module" found in space ${spaceKey}.`;
+      resultEl.classList.remove("hidden");
+      return;
+    }
+
+    // Populate the parent URLs textarea (replace existing content)
+    urlsEl.value = pages.map(p => p.url).join("\n");
+    resultEl.className = "discover-result";
+    resultEl.textContent = `✓ Found ${pages.length} module page(s) — URLs added above.`;
+    resultEl.classList.remove("hidden");
+  } catch (err) {
+    resultEl.className = "discover-result error";
+    resultEl.textContent = `Request failed: ${err.message}`;
+    resultEl.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔍 Find Module Pages";
+  }
+}
+
+// ─── Create / Update Tracker Page ────────────────────────────────────────────
+
+async function handleCreateTracker() {
+  // Reuse credentials already entered in the connection section
+  const baseUrl  = document.getElementById("meta-base-url").value.trim()  || _credentials.baseUrl;
+  const user     = document.getElementById("meta-user").value.trim()      || _credentials.user;
+  const apiToken = document.getElementById("meta-api-token").value.trim() || _credentials.apiToken;
+  // Space Key reused from the Find Module Pages row — no need to ask again
+  const spaceKey = document.getElementById("discover-space-key").value.trim();
+  const title    = document.getElementById("tracker-title")?.value.trim();
+  const label    = document.getElementById("tracker-label-inline")?.value.trim() || "ds-tracked";
+  const resultEl = document.getElementById("tracker-result");
+  const btn      = document.getElementById("create-tracker-btn");
+
+  if (!baseUrl || !user || !apiToken) {
+    resultEl.className = "tracker-result error";
+    resultEl.textContent = "Fill in the Confluence connection fields first.";
+    resultEl.classList.remove("hidden");
+    return;
+  }
+  if (!spaceKey) {
+    resultEl.className = "tracker-result error";
+    resultEl.textContent = "Enter a Space Key in the Find Module Pages row first.";
+    resultEl.classList.remove("hidden");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Saving…";
   resultEl.className = "tracker-result";
   resultEl.textContent = "";
   resultEl.classList.remove("hidden");
@@ -118,12 +192,12 @@ async function handleCreateTracker() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        space_key: spaceKey,
-        tracker_title: title || "DS Review Tracking Dashboard",
-        parent_page_id: parentId,
-        label: label,
+        space_key:          spaceKey,
+        tracker_title:      title || "Review Dashboard",
+        parent_page_id:     null,   // always place at space root
+        label:              label,
         confluence_base_url: baseUrl,
-        confluence_user: user,
+        confluence_user:    user,
         confluence_api_token: apiToken,
       }),
     });
@@ -133,18 +207,22 @@ async function handleCreateTracker() {
     if (!resp.ok) {
       resultEl.className = "tracker-result error";
       resultEl.textContent = `Error: ${data.error || "Unknown error"}`;
+      appendLog(`📊 Tracker error: ${data.error || "Unknown error"}`, "error");
     } else {
+      const verb = data.updated ? "updated" : "created";
       resultEl.className = "tracker-result";
       resultEl.innerHTML =
-        `✓ Tracker page ${data.id ? "updated" : "created"} — ` +
+        `✓ Dashboard ${verb} — ` +
         `<a href="${data.url}" target="_blank" rel="noopener">${data.title}</a>`;
+      appendLog(`📊 Review Dashboard ${verb}: ${data.title}`, "applied");
     }
   } catch (err) {
     resultEl.className = "tracker-result error";
     resultEl.textContent = `Request failed: ${err.message}`;
+    appendLog(`📊 Tracker request failed: ${err.message}`, "error");
   } finally {
     btn.disabled = false;
-    btn.innerHTML = "&#128202; Create / Update Tracker";
+    btn.innerHTML = "&#128202; Create / Update";
   }
 }
 
@@ -293,15 +371,19 @@ async function handleApply() {
   const parentUrls       = urlsRaw.split("\n").map(s => s.trim()).filter(Boolean);
   const force            = document.getElementById("force-apply").checked;
   const defaultApprovers = document.getElementById("meta-default-approvers").value.trim();
+  const ops              = getSelectedOps();
 
   const formData = new FormData();
   parentUrls.forEach(url => formData.append("parent_urls", url));
-  formData.append("force", force ? "true" : "false");
-  formData.append("confluence_base_url", _credentials.baseUrl);
-  formData.append("confluence_user", _credentials.user);
-  formData.append("confluence_api_token", _credentials.apiToken);
-  formData.append("default_approvers", defaultApprovers);
-  formData.append("label", (document.getElementById("tracker-label")?.value.trim()) || "ds-tracked");
+  formData.append("force",                    force ? "true" : "false");
+  formData.append("confluence_base_url",      _credentials.baseUrl);
+  formData.append("confluence_user",          _credentials.user);
+  formData.append("confluence_api_token",     _credentials.apiToken);
+  formData.append("default_approvers",        defaultApprovers);
+  formData.append("label",                    ops.trackingLabel);
+  formData.append("include_properties",       ops.properties       ? "true" : "false");
+  formData.append("include_change_history",   ops.changeHistory    ? "true" : "false");
+  formData.append("include_labels",           ops.labels           ? "true" : "false");
 
   try {
     const resp = await fetch("/metadata/apply", {
@@ -377,6 +459,11 @@ function handleEvent(event) {
       document.getElementById("sum-errors").textContent   = event.errors;
       document.getElementById("sum-total").textContent    = event.total;
       document.getElementById("restart-btn").classList.remove("hidden");
+      // Auto-trigger tracker creation if that checkbox was on
+      if (document.getElementById("op-tracker")?.checked) {
+        appendLog("📊 Creating / updating Review Dashboard…", "info");
+        handleCreateTracker();
+      }
       break;
     }
 
@@ -491,13 +578,31 @@ async function handleAutoLabel() {
 
 document.addEventListener("DOMContentLoaded", () => {
   loadDefaults();
-  initTrackerToggle();
 
   document.getElementById("preview-btn").addEventListener("click", handlePreview);
   document.getElementById("back-btn").addEventListener("click", () => showStep(1));
   document.getElementById("apply-btn").addEventListener("click", handleApply);
   document.getElementById("create-tracker-btn").addEventListener("click", handleCreateTracker);
-  document.getElementById("auto-label-btn").addEventListener("click", handleAutoLabel);
+  document.getElementById("discover-btn").addEventListener("click", handleFindModulePages);
+
+  // Show/hide tracking label sub-field when labels checkbox toggles
+  const opLabelsChk = document.getElementById("op-labels");
+  const opLabelsSub = document.getElementById("op-labels-sub");
+  if (opLabelsChk && opLabelsSub) {
+    opLabelsChk.addEventListener("change", () => {
+      opLabelsSub.style.display = opLabelsChk.checked ? "" : "none";
+    });
+  }
+
+  // Show/hide tracker config sub-fields when tracker checkbox toggles
+  const opTrackerChk = document.getElementById("op-tracker");
+  const opTrackerSub = document.getElementById("op-tracker-sub");
+  if (opTrackerChk && opTrackerSub) {
+    opTrackerChk.addEventListener("change", () => {
+      opTrackerSub.style.display = opTrackerChk.checked ? "" : "none";
+    });
+  }
+
 
   document.getElementById("restart-btn").addEventListener("click", () => {
     document.getElementById("progress-log").innerHTML = "";

@@ -19,8 +19,10 @@ import base64
 import os
 import re
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .config import MigrationConfigModel, SectionMappingModel
 from .confluence_client import ConfluenceAPIError, ConfluenceClient
@@ -58,8 +60,14 @@ class MigrationOrchestrator:
         self._verbose = verbose
         self._overwrite = overwrite
         self._pre_delete = pre_delete
-        self._llm: Optional[LLMProcessor] = None
-        self._confluence: Optional[ConfluenceClient] = None
+        # Thread-local storage: each worker thread gets its own client instances.
+        # requests.Session (used by ConfluenceClient) is NOT thread-safe; sharing
+        # one session across threads corrupts headers during concurrent uploads.
+        self._thread_local = threading.local()
+        # Per-path locks prevent concurrent threads from creating the same
+        # Confluence folder twice when multiple sections share a parent folder.
+        self._folder_locks: Dict[str, threading.Lock] = {}
+        self._folder_locks_mutex = threading.Lock()
 
         if config.db_logging:
             self._init_db()
@@ -271,6 +279,34 @@ class MigrationOrchestrator:
                 f"under '{root_title}' in space '{space_key}'."
             )
 
+    # ─── Private: Thread-safe folder resolution ──────────────────────────────
+
+    def _resolve_folder(
+        self,
+        space_key: str,
+        folder_path: str,
+        root_parent_id: Optional[str] = None,
+    ) -> str:
+        """
+        Resolve (or create) a Confluence folder, serialising concurrent calls
+        that target the same path.  Without this guard, parallel section workers
+        that share a parent folder (e.g. all S361 sub-pages) can each find the
+        folder absent and create it simultaneously, producing duplicate pages.
+        """
+        # Get or create a lock specific to this exact folder path.
+        with self._folder_locks_mutex:
+            if folder_path not in self._folder_locks:
+                self._folder_locks[folder_path] = threading.Lock()
+            lock = self._folder_locks[folder_path]
+
+        with lock:
+            client = self._get_confluence()
+            return client.resolve_or_create_folder_path(
+                space_key=space_key,
+                folder_path=folder_path,
+                root_parent_id=root_parent_id,
+            )
+
     # ─── Private: Process One Mapping ────────────────────────────────────────
 
     def _process_mapping(
@@ -318,10 +354,10 @@ class MigrationOrchestrator:
                 f"  [orchestrator] folder_only=True — treating '{folder_name}' as folder, "
                 f"no page will be created."
             )
+            folder_id: Optional[str] = None
             if not self._dry_run and mapping.confluence.space_key:
                 try:
-                    client = self._get_confluence()
-                    client.resolve_or_create_folder_path(
+                    folder_id = self._resolve_folder(
                         space_key=mapping.confluence.space_key,
                         folder_path=folder_name,
                         root_parent_id=mapping.confluence.parent_page_id,
@@ -329,7 +365,7 @@ class MigrationOrchestrator:
                 except Exception as exc:
                     print(f"  [orchestrator] WARN: folder creation failed: {exc}")
 
-            # NEW: table_rows_to_pages — create one page per data row in section tables
+            # table_rows_to_pages — create one page per data row in section's own tables
             if (
                 mapping.confluence.table_rows_to_pages
                 and matched.get("tables")
@@ -343,6 +379,17 @@ class MigrationOrchestrator:
                     self._create_table_row_pages(mapping, matched, elem_folder)
                 except Exception as exc:
                     print(f"  [orchestrator] WARN: table-rows-to-pages failed: {exc}")
+
+            # expand_tables_to_pages — only process this folder section's OWN direct tables
+            # (max_depth=0).  Child sections (e.g. Collapsible Widgets, Documents) each have
+            # their own rule (rule 10) which creates a page and expands rows under that page.
+            # Recursing here (max_depth=1) would claim those child page titles first, causing
+            # rule 10's expansion to silently skip them ("already exists") under the wrong parent.
+            if mapping.llm.expand_tables_to_pages and folder_id and not self._dry_run:
+                try:
+                    self._expand_tables_to_pages_recursive(mapping, matched, folder_id, depth=0, max_depth=0)
+                except Exception as exc:
+                    print(f"  [expand] WARN: folder expand_tables_to_pages failed: {exc}")
 
             return SectionResult(
                 section_id=matched["id"],
@@ -493,6 +540,13 @@ class MigrationOrchestrator:
                 except Exception as exc:
                     print(f"  [expand] WARN: expand_tables_to_pages failed: {exc}")
 
+            # Expand Use Case: blocks into individual child pages
+            if mapping.llm.expand_usecases_to_pages:
+                try:
+                    self._expand_usecases_to_pages(mapping, matched, page_id)
+                except Exception as exc:
+                    print(f"  [usecases] WARN: expand_usecases_to_pages failed: {exc}")
+
             return SectionResult(
                 section_id=matched["id"],
                 section_title=matched["title"],
@@ -555,7 +609,7 @@ class MigrationOrchestrator:
 
         # Resolve / create the Page Elements folder
         print(f"  [table-rows] Resolving folder '{folder_path}'")
-        folder_id = client.resolve_or_create_folder_path(
+        folder_id = self._resolve_folder(
             space_key=mapping.confluence.space_key,
             folder_path=folder_path,
             root_parent_id=mapping.confluence.parent_page_id,
@@ -622,10 +676,16 @@ class MigrationOrchestrator:
         section: ParsedSection,
         parent_page_id: str,
         depth: int = 0,
+        max_depth: int = 1,
     ) -> None:
         """
         Recursively create one Confluence page per data row for every table in
-        `section` and all its descendant subsections (children).
+        `section` and its direct children (up to max_depth levels deep).
+
+        max_depth=1 (default) means: process tables in `section` itself (depth 0)
+        and in its immediate children (depth 1), but NOT grandchildren.  This
+        prevents sub-tables inside detail sections (e.g. Collapsible Widgets,
+        Documents) from being incorrectly expanded as additional row pages.
 
         Triggered by ``llm.expand_tables_to_pages: true`` in the config.  Unlike
         the ``confluence.table_rows_to_pages`` flag (which only operates on
@@ -653,12 +713,13 @@ class MigrationOrchestrator:
             data_rows = rows[1:] if len(rows) > 1 else []
             print(f"  [expand] {indent}  table[{t_idx}]: {len(rows)} rows | headers: {headers} | data rows: {len(data_rows)}")
 
-            for r_idx, data_row in enumerate(data_rows):
+            def _create_row_page(r_idx_row):
+                r_idx, data_row = r_idx_row
                 is_blank = not any(cell.strip() for cell in data_row)
                 page_title = _fill_row_title(row_title_tpl, data_row) if not is_blank else "(blank)"
                 print(f"  [expand] {indent}    row[{r_idx}]: {data_row} → {'SKIP (blank)' if is_blank else repr(page_title)}")
                 if is_blank:
-                    continue
+                    return
 
                 content = _build_transposed_table_html(headers, data_row)
 
@@ -699,9 +760,126 @@ class MigrationOrchestrator:
                             f"    [expand-tables] ERROR creating '{page_title}': {exc}"
                         )
 
-        # Recurse into subsections so their tables are also expanded
-        for child in children:
-            self._expand_tables_to_pages_recursive(mapping, child, parent_page_id, depth=depth + 1)
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                list(pool.map(_create_row_page, enumerate(data_rows)))
+
+        # Recurse into direct children only if we haven't reached max_depth.
+        # Stopping here prevents grandchild sub-tables (e.g. Collapsible Widgets,
+        # Documents) from being expanded as additional row pages.
+        if depth < max_depth:
+            for child in children:
+                self._expand_tables_to_pages_recursive(
+                    mapping, child, parent_page_id, depth=depth + 1, max_depth=max_depth
+                )
+
+    def _expand_usecases_to_pages(
+        self,
+        mapping: SectionMappingModel,
+        section: ParsedSection,
+        parent_page_id: str,
+    ) -> None:
+        """
+        Split the Use Cases section on 'Use Case:' text boundaries and create
+        one Confluence child page per use case under parent_page_id.
+
+        Each child page contains:
+          - The use case text (wrapped in <p> tags)
+          - A PlantUML use case diagram generated by the LLM
+
+        Page titles are built from mapping.confluence.use_case_page_title,
+        which supports the {use_case_name} placeholder (filled with the text
+        that follows "Use Case:").  Falls back to "{use_case_name}" if unset.
+
+        Triggered by ``llm.expand_usecases_to_pages: true`` in the config.
+        """
+        from .llm_processor import _build_initial_text
+
+        text = _build_initial_text(section)
+
+        # Split on "Use Case:" boundaries, keeping the delimiter in each chunk
+        _UC_RE = re.compile(r'(?=Use Case\s*:)', re.IGNORECASE)
+        parts = _UC_RE.split(text)
+        uc_parts = [p.strip() for p in parts
+                    if re.match(r'Use Case\s*:', p.strip(), re.IGNORECASE)]
+
+        if not uc_parts:
+            print(f"  [usecases] No 'Use Case:' blocks found in section '{section['title']}' — nothing to expand")
+            return
+
+        print(f"  [usecases] Found {len(uc_parts)} use case(s) in '{section['title']}' — creating child pages")
+
+        client        = self._get_confluence()
+        uc_title_tpl  = mapping.confluence.use_case_page_title or "{use_case_name}"
+
+        def _create_uc_page(args: tuple) -> None:
+            uc_idx, uc_text = args
+
+            # Extract the use case name from the first line ("Use Case: <name>")
+            name_match = re.match(r'Use Case\s*:\s*(.+?)(?:\n|$)', uc_text, re.IGNORECASE)
+            uc_name    = name_match.group(1).strip() if name_match else f"Use Case {uc_idx + 1}"
+            page_title = uc_title_tpl.replace("{use_case_name}", uc_name)
+
+            # Always generate a diagram for child pages via the usecase_diagrams LLM task.
+            # Note: mapping.llm.enabled controls the PARENT page only (kept false to make
+            # the parent a lightweight container).  Child pages always need the diagram.
+            content = uc_text
+            try:
+                llm = self._get_llm()
+                # Build a minimal fake ParsedSection containing only this use case's text
+                fake_section: ParsedSection = {
+                    **section,
+                    "id":               f"{section['id']}_uc{uc_idx}",
+                    "title":            page_title,
+                    "raw_text":         uc_text,
+                    "tables":           [],
+                    "images":           [],
+                    "element_sequence": [],
+                    "children":         [],
+                }
+                content, _ = llm.process_section(fake_section, ["usecase_diagrams"])
+                print(f"  [usecases] LLM generated diagram for '{uc_name}'")
+            except Exception as exc:
+                print(f"  [usecases] WARN: LLM failed for '{uc_name}': {exc} — creating page without diagram")
+
+            # Build Confluence storage format: wrap plain text in <p> tags,
+            # keep any <ac:structured-macro> blocks untouched
+            page_body = _wrap_usecase_content(content)
+
+            # Overwrite existing page if requested
+            if self._overwrite:
+                try:
+                    existing = client.get_page_by_title(mapping.confluence.space_key, page_title)
+                    if existing:
+                        print(f"  [usecases] OVERWRITE: deleting existing '{page_title}' (id={existing['id']})")
+                        client.delete_page(existing["id"])
+                except Exception:
+                    pass
+
+            try:
+                result      = client.create_page(
+                    space_key=mapping.confluence.space_key,
+                    title=page_title,
+                    content=page_body,
+                    parent_id=parent_page_id,
+                )
+                child_id    = result["id"]
+                print(f"  [usecases] Created '{page_title}' (id={child_id})")
+
+                # Render PlantUML macros → PNG attachments on the child page
+                if "plantuml" in page_body:
+                    try:
+                        self._render_plantuml_diagrams(page_id=child_id, content=page_body)
+                    except Exception as puml_exc:
+                        print(f"  [usecases] WARN: PlantUML render failed for '{page_title}': {puml_exc}")
+
+            except ConfluenceAPIError as exc:
+                if exc.status_code == 400 and "title already exists" in exc.response_body.lower():
+                    print(f"  [usecases] WARN: '{page_title}' already exists — skipping")
+                else:
+                    print(f"  [usecases] ERROR creating '{page_title}': {exc}")
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(_create_uc_page, enumerate(uc_parts)))
 
     def _find_matching_section(
         self,
@@ -772,7 +950,7 @@ class MigrationOrchestrator:
                     f"  [orchestrator] Resolving folder path '{resolved_folder}' "
                     f"in space '{target.space_key}'"
                 )
-                effective_parent_id = client.resolve_or_create_folder_path(
+                effective_parent_id = self._resolve_folder(
                     space_key=target.space_key,
                     folder_path=resolved_folder,
                     root_parent_id=target.parent_page_id,
@@ -948,10 +1126,11 @@ class MigrationOrchestrator:
 
         print(f"  [orchestrator] Uploading {len(images)} image(s) for page {page_id}")
 
-        # --- Upload all images and build {image_index → macro_html} map ------
+        # --- Upload all images concurrently and build {image_index → macro_html} map ---
         uploaded: List[Tuple[int, str]] = []  # (image_index_in_section, macro_html)
 
-        for img_idx, img in enumerate(images):
+        def _upload_one(img_idx_img):
+            img_idx, img = img_idx_img
             try:
                 data_bytes = base64.b64decode(img["data_b64"])
                 att = client.upload_attachment(
@@ -963,7 +1142,6 @@ class MigrationOrchestrator:
                 print(
                     f"    Uploaded '{img['filename']}' → attachment id={att['id']}"
                 )
-                # Wrap in <p> for well-formed Confluence storage XML
                 macro = (
                     f'<p>'
                     f'<ac:image>'
@@ -971,9 +1149,15 @@ class MigrationOrchestrator:
                     f'</ac:image>'
                     f'</p>'
                 )
-                uploaded.append((img_idx, macro))
+                return img_idx, macro
             except Exception as exc:
                 print(f"    WARN: could not upload '{img['filename']}': {exc}")
+                return None
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for result in pool.map(_upload_one, enumerate(images)):
+                if result is not None:
+                    uploaded.append(result)
 
         if not uploaded:
             return content
@@ -1059,21 +1243,21 @@ class MigrationOrchestrator:
     # ─── Lazy Client Initializers ─────────────────────────────────────────────
 
     def _get_llm(self) -> LLMProcessor:
-        if self._llm is None:
-            self._llm = LLMProcessor(
+        if not getattr(self._thread_local, "llm", None):
+            self._thread_local.llm = LLMProcessor(
                 model_name=self._config.llm_model,
                 temperature=self._config.llm_temperature,
             )
-        return self._llm
+        return self._thread_local.llm
 
     def _get_confluence(self) -> ConfluenceClient:
-        if self._confluence is None:
-            self._confluence = ConfluenceClient(
+        if not getattr(self._thread_local, "confluence", None):
+            self._thread_local.confluence = ConfluenceClient(
                 base_url=self._config.confluence_base_url,
                 user=self._config.confluence_user,
                 api_token=self._config.confluence_api_token,
             )
-        return self._confluence
+        return self._thread_local.confluence
 
     # ─── SQLite Logging ──────────────────────────────────────────────────────
 
@@ -1196,6 +1380,54 @@ def _flatten_sections(sections: List[ParsedSection]) -> List[ParsedSection]:
         if s["children"]:
             result.extend(_flatten_sections(s["children"]))
     return result
+
+
+def _wrap_usecase_content(text: str) -> str:
+    """
+    Convert the output of the usecase_diagrams LLM task into Confluence storage
+    format for a single use-case child page.
+
+    The input is a mix of:
+      - Plain text lines (use case description)  → wrapped in <p> tags (XML-escaped)
+      - <table> blocks (from _build_initial_text) → preserved verbatim
+      - <ac:structured-macro> blocks (PlantUML/code macros) → preserved verbatim
+
+    Uses finditer over a combined regex so blocks are never split across lines
+    or accidentally XML-escaped.
+    """
+    import re as _re
+    import xml.sax.saxutils as saxutils
+
+    # Match both table blocks and structured-macro blocks (both must pass through verbatim)
+    _BLOCK_RE = _re.compile(
+        r'(<table\b.*?</table>|<ac:structured-macro\b.*?</ac:structured-macro>)',
+        _re.DOTALL | _re.IGNORECASE,
+    )
+
+    parts = []
+    last_end = 0
+
+    for m in _BLOCK_RE.finditer(text):
+        # Wrap any plain text that appeared before this block
+        plain = text[last_end:m.start()].strip()
+        if plain:
+            for line in plain.splitlines():
+                line = line.strip()
+                if line:
+                    parts.append(f"<p>{saxutils.escape(line)}</p>")
+        # Emit the block (table or macro) verbatim
+        parts.append(m.group(0))
+        last_end = m.end()
+
+    # Wrap any trailing plain text after the last block
+    plain = text[last_end:].strip()
+    if plain:
+        for line in plain.splitlines():
+            line = line.strip()
+            if line:
+                parts.append(f"<p>{saxutils.escape(line)}</p>")
+
+    return "\n".join(parts)
 
 
 def _wrap_plain_text(section: ParsedSection) -> str:

@@ -356,6 +356,8 @@ class MetadataManager:
         approvers: str = "",
         module: str = "",
         version: int = 1,
+        include_properties: bool = True,
+        include_change_history: bool = True,
     ) -> list:
         """
         Build the ADF nodes for the Document Metadata and Change History blocks.
@@ -472,7 +474,12 @@ class MetadataManager:
             "content": [change_history_node],
         }
 
-        return [heading_metadata, details_node, expand_history]
+        nodes = [heading_metadata]  # sentinel heading always present when any block requested
+        if include_properties:
+            nodes.append(details_node)
+        if include_change_history:
+            nodes.append(expand_history)
+        return nodes
 
     def _has_metadata_adf(self, adf_doc: dict) -> bool:
         """
@@ -699,6 +706,9 @@ class MetadataManager:
         approvers: str = "",
         module: str = "",
         label: str = "",
+        include_properties: bool = True,
+        include_change_history: bool = True,
+        include_labels: bool = True,
     ) -> dict:
         """
         Prepend the Document Metadata block to a single Confluence page.
@@ -735,6 +745,8 @@ class MetadataManager:
         """
         import json as _json
 
+        modify_content = include_properties or include_change_history
+
         # ── 1. GET storage — reliable sentinel detection ──────────────────────
         # Confluence auto-converts ADF→storage on read, so this path works
         # regardless of whether the page was last written in storage or ADF.
@@ -751,89 +763,140 @@ class MetadataManager:
         title       = page_s["title"]
         already_has = self.has_metadata_blocks(page_s["body"])
 
-        if already_has and not force:
+        # ── Skip guard (content modification only) ────────────────────────────
+        if modify_content and already_has and not force:
+            # Content already present and not forced — skip page content but
+            # still apply labels if requested (they are always idempotent).
+            if include_labels and label:
+                try:
+                    existing = set(self._client.get_page_labels(page_id))
+                    if label not in existing:
+                        self._client.add_label_to_page(page_id, label)
+                except Exception:
+                    pass  # label failure is non-fatal on a skip
             return {"page_id": page_id, "title": title, "status": "skipped"}
 
-        # ── 2. GET ADF — structural manipulation ─────────────────────────────
-        try:
-            page_a = self._client.get_page(page_id, fmt="atlas_doc_format")
-        except ConfluenceAPIError as exc:
-            return {
-                "page_id": page_id,
-                "title":   title,
-                "status":  "error",
-                "error":   str(exc),
-            }
-
-        raw = page_a.get("body", "")
-        adf_doc: dict = {}
-        if raw:
+        # ── 2. GET ADF — structural manipulation (only when modifying content) ─
+        if modify_content:
             try:
-                adf_doc = _json.loads(raw)
-            except ValueError:
-                pass
-
-        # Safety guard: don't overwrite with a blank document
-        if not adf_doc:
-            return {
-                "page_id": page_id,
-                "title":   title,
-                "status":  "error",
-                "error":   "Could not retrieve ADF body from Confluence API. "
-                           "The page may contain content that cannot be read in "
-                           "atlas_doc_format.",
-            }
-
-        # ── 3. Strip old metadata + Change History blocks ─────────────────────
-        # Uses JSON-search so both storage-converted and native ADF blocks are
-        # matched, including the legacy "🕓 Change History" expand block.
-        if already_has:
-            adf_doc = self._strip_metadata_adf(adf_doc)
-
-        # ── 4. Prepend new ADF metadata block ─────────────────────────────────
-        # Prefer author_id from the storage GET (more reliable); fall back to ADF.
-        author_id = page_s.get("author_id", "") or page_a.get("author_id", "")
-        new_nodes = self.generate_metadata_adf_nodes(
-            author_id=author_id,
-            approvers=approvers,
-            module=module,
-            version=page_s["version"] + 1,
-        )
-        adf_doc["content"] = new_nodes + adf_doc.get("content", [])
-
-        # ── 5. Write back in ADF format (version from storage GET) ────────────
-        try:
-            self._client.update_page(
-                page_id=page_id,
-                title=title,
-                content=_json.dumps(adf_doc),
-                current_version=page_s["version"],
-                representation="atlas_doc_format",
-            )
-        except ConfluenceAPIError as exc:
-            return {
-                "page_id": page_id,
-                "title":   title,
-                "status":  "error",
-                "error":   str(exc),
-            }
-
-        # ── 6. Optionally add tracking label (non-fatal) ─────────────────────
-        # The label is what the details-summary macro uses to find this page.
-        # Label failure must NOT prevent the "applied" status being returned —
-        # the page content has already been written successfully.
-        if label:
-            try:
-                self._client.add_label_to_page(page_id, label)
-            except Exception as exc:
+                page_a = self._client.get_page(page_id, fmt="atlas_doc_format")
+            except ConfluenceAPIError as exc:
                 return {
-                    "page_id":       page_id,
-                    "title":         title,
-                    "status":        "applied",
-                    "label_warning": f"Label '{label}' could not be added: {exc}",
+                    "page_id": page_id,
+                    "title":   title,
+                    "status":  "error",
+                    "error":   str(exc),
+                }
+
+            raw = page_a.get("body", "")
+            adf_doc: dict = {}
+            if raw:
+                try:
+                    adf_doc = _json.loads(raw)
+                except ValueError:
+                    pass
+
+            # Safety guard: don't overwrite with a blank document
+            if not adf_doc:
+                return {
+                    "page_id": page_id,
+                    "title":   title,
+                    "status":  "error",
+                    "error":   "Could not retrieve ADF body from Confluence API. "
+                               "The page may contain content that cannot be read in "
+                               "atlas_doc_format.",
+                }
+
+            # ── 3. Strip old metadata + Change History blocks ─────────────────
+            # Uses JSON-search so both storage-converted and native ADF blocks are
+            # matched, including the legacy "🕓 Change History" expand block.
+            if already_has:
+                adf_doc = self._strip_metadata_adf(adf_doc)
+
+            # ── 4. Prepend new ADF metadata block ─────────────────────────────
+            # Prefer author_id from the storage GET (more reliable); fall back to ADF.
+            author_id = page_s.get("author_id", "") or page_a.get("author_id", "")
+            new_nodes = self.generate_metadata_adf_nodes(
+                author_id=author_id,
+                approvers=approvers,
+                module=module,
+                version=page_s["version"] + 1,
+                include_properties=include_properties,
+                include_change_history=include_change_history,
+            )
+            adf_doc["content"] = new_nodes + adf_doc.get("content", [])
+
+            # ── 5. Write back in ADF format (version from storage GET) ────────
+            try:
+                self._client.update_page(
+                    page_id=page_id,
+                    title=title,
+                    content=_json.dumps(adf_doc),
+                    current_version=page_s["version"],
+                    representation="atlas_doc_format",
+                )
+            except ConfluenceAPIError as exc:
+                return {
+                    "page_id": page_id,
+                    "title":   title,
+                    "status":  "error",
+                    "error":   str(exc),
+                }
+
+        # ── 6. Labels — always idempotent (check before adding) ───────────────
+        # Fetching existing labels before adding prevents duplicate Confluence
+        # labels and avoids unnecessary API writes on re-runs.
+        if include_labels and label:
+            try:
+                existing = set(self._client.get_page_labels(page_id))
+                if label not in existing:
+                    self._client.add_label_to_page(page_id, label)
+            except Exception as exc:
+                if modify_content:
+                    # Content was written successfully — report as applied with warning
+                    return {
+                        "page_id":       page_id,
+                        "title":         title,
+                        "status":        "applied",
+                        "label_warning": f"Label '{label}' could not be added: {exc}",
+                    }
+                # Labels-only mode: treat label failure as an error
+                return {
+                    "page_id": page_id,
+                    "title":   title,
+                    "status":  "error",
+                    "error":   str(exc),
                 }
 
         return {"page_id": page_id, "title": title, "status": "applied"}
+
+    def find_module_pages(self, space_key: str) -> List[dict]:
+        """
+        Auto-discover Module pages in a Confluence space.
+
+        Searches for all pages whose title contains "Module", then filters to
+        those that actually **end** with a module suffix, e.g.::
+
+            "Contract Budget Amendment - Module"
+            "Contract Budget – Module"
+
+        Args:
+            space_key: Confluence space key, e.g. "DS".
+
+        Returns:
+            Alphabetically sorted list of ``{id, title, url}`` dicts.
+        """
+        _MODULE_SUFFIX = re.compile(r'[\s\u2013\u2014-]+[Mm]odule\s*$')
+        candidates = self._client.find_pages_by_title_contains(space_key, "Module")
+        results = []
+        for page in candidates:
+            if _MODULE_SUFFIX.search(page["title"]):
+                results.append({
+                    "id":    page["id"],
+                    "title": page["title"],
+                    "url":   f"{self._base_url}/wiki/pages/{page['id']}",
+                })
+        return sorted(results, key=lambda p: p["title"])
 
     def preview_scope(self, parent_urls: List[str]) -> List[dict]:
         """
@@ -923,6 +986,9 @@ class MetadataManager:
         force: bool = False,
         default_approvers: str = "",
         label: str = "",
+        include_properties: bool = True,
+        include_change_history: bool = True,
+        include_labels: bool = True,
     ) -> Generator[dict, None, None]:
         """
         Apply metadata blocks to all descendant pages under each parent URL.
@@ -937,13 +1003,15 @@ class MetadataManager:
             {type: "complete", applied, skipped, errors, total}
 
         Args:
-            parent_urls:       List of Confluence page URLs.
-            force:             Re-apply to pages that already have blocks.
-            default_approvers: Default approvers string to pre-populate.
-            label:             Confluence label to add to each page after
-                               applying metadata (used by the live
-                               details-summary macro on the tracker page).
-                               Non-fatal if labelling fails.
+            parent_urls:           List of Confluence page URLs.
+            force:                 Re-apply to pages that already have blocks.
+            default_approvers:     Default approvers string to pre-populate.
+            label:                 Confluence label to add to each page
+                                   (used by the live details-summary macro).
+                                   Non-fatal if labelling fails.
+            include_properties:    Whether to inject the Page Properties table.
+            include_change_history: Whether to inject the Change History macro.
+            include_labels:        Whether to add/update page labels.
         """
         # Collect all page IDs with their module assignment first
         all_pages: List[dict] = []   # [{id, title, parent_id, module}, ...]
@@ -998,6 +1066,9 @@ class MetadataManager:
                 approvers=default_approvers,
                 module=page_info["module"],
                 label=label,
+                include_properties=include_properties,
+                include_change_history=include_change_history,
+                include_labels=include_labels,
             )
             result["current"] = i
             result["total"] = total

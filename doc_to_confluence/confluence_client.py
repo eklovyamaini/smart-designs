@@ -492,6 +492,42 @@ class ConfluenceClient:
 
         return results
 
+    def find_pages_by_title_contains(
+        self,
+        space_key: str,
+        title_contains: str,
+    ) -> List[dict]:
+        """
+        Search for pages in a space whose title contains the given string.
+
+        Uses the Confluence v1 CQL search endpoint:
+            GET /wiki/rest/api/content/search?cql=space="DS" AND title~"Module" AND type=page
+
+        Args:
+            space_key:      Confluence space key, e.g. "DS".
+            title_contains: Substring to search for in page titles.
+
+        Returns:
+            List of dicts with keys: ``id``, ``title``.
+        """
+        url   = f"{self._base_url}/wiki/rest/api/content/search"
+        cql   = f'space = "{space_key}" AND title ~ "{title_contains}" AND type = page'
+        results: List[dict] = []
+        start = 0
+        limit = 250
+
+        while True:
+            resp  = self._request("GET", url, params={"cql": cql, "limit": limit, "start": start})
+            data  = resp.json()
+            items = data.get("results", [])
+            for item in items:
+                results.append({"id": str(item.get("id", "")), "title": item.get("title", "")})
+            if len(items) < limit:
+                break
+            start += limit
+
+        return results
+
     def find_user_by_name(self, display_name: str) -> Optional[str]:
         """
         Find an Atlassian account ID by searching for a user's display name.

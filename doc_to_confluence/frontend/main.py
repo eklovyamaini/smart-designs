@@ -18,12 +18,13 @@ import queue
 import sys
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import yaml
-from fastapi import FastAPI, File, Form, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -86,6 +87,7 @@ class SaveDefaultsRequest(BaseModel):
     default_space_key: str = ""
     llm_model: str = "gpt-oss:20b"
     llm_temperature: float = 0.1
+    max_llm_workers: int = 4
     plantuml_theme: str = "cerulean"
     metadata_default_approvers: str = ""
 
@@ -207,6 +209,7 @@ async def get_defaults() -> JSONResponse:
             "default_space_key":          confluence.get("default_space_key", ""),
             "llm_model":                  llm.get("model", "gpt-oss:20b"),
             "llm_temperature":            llm.get("temperature", 0.1),
+            "max_llm_workers":            llm.get("max_workers", 4),
             "plantuml_theme":             plantuml.get("theme", "cerulean"),
             "metadata_default_approvers": metadata.get("default_approvers", ""),
         })
@@ -244,6 +247,7 @@ async def save_defaults(body: SaveDefaultsRequest) -> JSONResponse:
         raw["llm"] = {
             "model":       body.llm_model.strip() or "gpt-oss:20b",
             "temperature": body.llm_temperature,
+            "max_workers": max(1, body.max_llm_workers),
         }
         raw["plantuml"] = {
             "theme": body.plantuml_theme.strip() or "cerulean",
@@ -471,6 +475,45 @@ async def metadata_preview(request: Request) -> JSONResponse:
     return JSONResponse({"pages": pages})
 
 
+@app.get("/metadata/find-module-pages")
+async def metadata_find_module_pages(
+    space_key:              str = Query(...),
+    confluence_base_url:    str = Query(...),
+    confluence_user:        str = Query(...),
+    confluence_api_token:   str = Query(...),
+) -> JSONResponse:
+    """
+    Return all Module pages in a Confluence space (pages whose title ends
+    with "- Module" or "– Module"), for use in auto-populating the parent
+    URL list.
+
+    Query parameters:
+        space_key, confluence_base_url, confluence_user, confluence_api_token
+
+    Returns:
+        { "pages": [{id, title, url}, ...] }
+    """
+    if not space_key:
+        return JSONResponse(status_code=422, content={"error": "space_key is required"})
+    if not confluence_base_url or not confluence_user or not confluence_api_token:
+        return JSONResponse(
+            status_code=422,
+            content={"error": "confluence_base_url, confluence_user, and confluence_api_token are required"},
+        )
+    try:
+        client = ConfluenceClient(
+            base_url=confluence_base_url,
+            user=confluence_user,
+            api_token=confluence_api_token,
+        )
+        mgr   = MetadataManager(client=client, base_url=confluence_base_url)
+        pages = mgr.find_module_pages(space_key)
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+    return JSONResponse({"pages": pages})
+
+
 @app.post("/metadata/create-tracker")
 async def metadata_create_tracker(request: Request) -> JSONResponse:
     """
@@ -535,6 +578,9 @@ async def metadata_apply(
     confluence_api_token: str = Form(...),
     default_approvers: str = Form(""),
     label: str = Form("ds-tracked"),
+    include_properties: str = Form("true"),
+    include_change_history: str = Form("true"),
+    include_labels: str = Form("true"),
 ) -> StreamingResponse:
     """
     SSE streaming endpoint. Applies metadata blocks to all pages in scope.
@@ -545,7 +591,10 @@ async def metadata_apply(
         data: {"type": "complete", "applied", "skipped", "errors", "total"}
         data: {"type": "error",    "message": "..."}
     """
-    force_bool = force.lower() in ("true", "1", "yes")
+    force_bool               = force.lower()               in ("true", "1", "yes")
+    include_properties_bool  = include_properties.lower()  in ("true", "1", "yes")
+    include_change_history_bool = include_change_history.lower() in ("true", "1", "yes")
+    include_labels_bool      = include_labels.lower()      in ("true", "1", "yes")
 
     try:
         client = ConfluenceClient(
@@ -568,6 +617,9 @@ async def metadata_apply(
                 force=force_bool,
                 default_approvers=default_approvers,
                 label=label,
+                include_properties=include_properties_bool,
+                include_change_history=include_change_history_bool,
+                include_labels=include_labels_bool,
             ):
                 result_queue.put(event)
         except Exception as exc:
@@ -723,11 +775,73 @@ def _build_streaming_orchestrator(
             self._rq = rq
             super().__init__(**kwargs)
 
+        def _pre_delete_module_pages(self) -> None:
+            """Override to stream deletion progress via the SSE queue."""
+            client = self._get_confluence()
+
+            # Collect unique (space_key, root_folder_title) pairs
+            roots: set = set()
+            for mapping in self._config.sections:
+                space_key   = mapping.confluence.space_key
+                folder_path = mapping.confluence.folder_path
+                if not space_key or not folder_path:
+                    continue
+                first_segment = folder_path.split("/")[0].strip()
+                if first_segment:
+                    roots.add((space_key, first_segment))
+
+            if not roots:
+                self._rq.put({"type": "status", "message": "Pre-delete: no folders configured, skipping."})
+                return
+
+            for space_key, root_title in sorted(roots):
+                self._rq.put({"type": "status", "message": f"Pre-delete: looking for '{root_title}' in space '{space_key}'…"})
+                try:
+                    root_page = client.get_page_by_title(space_key, root_title)
+                except Exception as exc:
+                    print(f"[orchestrator] pre_delete: WARN: lookup failed for '{root_title}': {exc}")
+                    continue
+
+                if root_page is None:
+                    self._rq.put({"type": "status", "message": f"Pre-delete: '{root_title}' not found — nothing to delete."})
+                    continue
+
+                root_id = root_page["id"]
+                try:
+                    descendants = client.get_all_descendants(root_id)
+                except Exception as exc:
+                    print(f"[orchestrator] pre_delete: WARN: could not fetch descendants of '{root_title}': {exc}")
+                    continue
+
+                total_to_delete = len(descendants) + 1
+                self._rq.put({"type": "status", "message": f"Pre-delete: deleting {total_to_delete} page(s) under '{root_title}'…"})
+
+                deleted = 0
+                for page in reversed(descendants):
+                    try:
+                        client.delete_page(page["id"])
+                        deleted += 1
+                        if deleted % 10 == 0:
+                            self._rq.put({"type": "status", "message": f"Pre-delete: deleted {deleted}/{total_to_delete} pages under '{root_title}'…"})
+                    except Exception as exc:
+                        print(f"[orchestrator] pre_delete: WARN: could not delete '{page['title']}': {exc}")
+
+                try:
+                    client.delete_page(root_id)
+                    deleted += 1
+                except Exception as exc:
+                    print(f"[orchestrator] pre_delete: WARN: could not delete root '{root_title}': {exc}")
+
+                self._rq.put({"type": "status", "message": f"Pre-delete: done — {deleted} page(s) removed under '{root_title}'."})
+
         def run(self, doc_path: str, config_path: str = "") -> MigrationReport:  # type: ignore[override]
             started_at = _now_iso()
             print(f"[streaming_orchestrator] Starting: {doc_path}")
             if self._dry_run:
                 print("[streaming_orchestrator] DRY RUN")
+
+            # Emit immediately so the UI exits "Connecting…" state
+            self._rq.put({"type": "status", "message": "Connected — preparing migration…"})
 
             # Step 0: Pre-delete module folder hierarchy (if enabled and not dry-run)
             if self._pre_delete and not self._dry_run:
@@ -753,45 +867,71 @@ def _build_streaming_orchestrator(
             results: List[SectionResult] = []
             matched_section_ids: set = set()
             total = len(self._config.sections)
-            # Level-aware folder stack mirrors the logic in orchestrator.run()
-            folder_stack: list = []   # [(level, name), …]
 
+            # ── Pre-compute inherited_folder for each mapping (serial pass) ──────
+            # This mirrors the folder_stack logic in orchestrator.run() so that
+            # section mappings processed in parallel still receive the correct
+            # inherited folder context.
+            _pre_folder_stack: list = []   # [(level, name), …]
+            enriched: list = []            # (i, mapping, inherited_folder)
             for i, mapping in enumerate(self._config.sections):
-                # Emit section_start event
+                inherited_folder = "/".join(n for _, n in _pre_folder_stack) or None
+                enriched.append((i, mapping, inherited_folder))
+                if mapping.confluence.folder_only:
+                    folder_name = mapping.confluence.folder_path or ""
+                    if folder_name:
+                        lvl = mapping.level or 1
+                        while _pre_folder_stack and _pre_folder_stack[-1][0] > lvl:
+                            _pre_folder_stack.pop()
+                        _pre_folder_stack.append((lvl, folder_name))
+
+            # ── Partition mappings into three execution groups ────────────────────
+            # folder_only  → serial first  (creates the Confluence folder hierarchy)
+            # create/update → parallel      (independent pages; the expensive phase)
+            # append        → serial last   (must append to already-created pages)
+            folder_items = [(i, m, f) for i, m, f in enriched if m.confluence.folder_only]
+            create_items = [(i, m, f) for i, m, f in enriched
+                            if not m.confluence.folder_only and m.confluence.action != "append"]
+            append_items = [(i, m, f) for i, m, f in enriched
+                            if not m.confluence.folder_only and m.confluence.action == "append"]
+
+            def _run_one(args):
+                i, mapping, inherited_folder = args
                 self._rq.put({
                     "type": "section_start",
                     "mapping_match": mapping.match,
                     "index": i,
                     "total": total,
                 })
-
-                inherited_folder = "/".join(name for _, name in folder_stack) or None
-
-                # Run existing single-mapping processor (from parent class)
                 result = self._process_mapping(
                     mapping, all_sections, inherited_folder=inherited_folder
                 )
-                if result.get("section_id"):
-                    matched_section_ids.add(result["section_id"])
-                results.append(result)
-
-                # Update level-aware folder stack from folder_only sections
-                if mapping.confluence.folder_only:
-                    new_folder = mapping.confluence.folder_path
-                    if not new_folder and result.get("section_title"):
-                        new_folder = result["section_title"]
-                    if new_folder:
-                        level = mapping.level or 1
-                        # Only pop entries strictly deeper than current level
-                        while folder_stack and folder_stack[-1][0] > level:
-                            folder_stack.pop()
-                        folder_stack.append((level, new_folder))
-
-                # Emit section_result event
                 self._rq.put({
                     "type": "section_result",
                     "result": dict(result),
                 })
+                return result
+
+            # ── Phase 1: folder-only sections (serial) ───────────────────────────
+            for args in folder_items:
+                result = _run_one(args)
+                if result.get("section_id"):
+                    matched_section_ids.add(result["section_id"])
+                results.append(result)
+
+            # ── Phase 2: independent create/update sections (parallel) ────────────
+            with ThreadPoolExecutor(max_workers=self._config.max_llm_workers) as pool:
+                for result in pool.map(_run_one, create_items):
+                    if result.get("section_id"):
+                        matched_section_ids.add(result["section_id"])
+                    results.append(result)
+
+            # ── Phase 3: append-action sections (serial) ─────────────────────────
+            for args in append_items:
+                result = _run_one(args)
+                if result.get("section_id"):
+                    matched_section_ids.add(result["section_id"])
+                results.append(result)
 
             # ── Unmatched-section audit ────────────────────────────────────────
             unmatched = [s for s in all_sections if s["id"] not in matched_section_ids]

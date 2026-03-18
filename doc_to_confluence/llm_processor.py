@@ -29,6 +29,7 @@ IMPORTANT — macro preservation through confluence_format:
   This guarantees plantuml and code macros are never touched by the formatter.
 """
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -277,19 +278,14 @@ class LLMProcessor:
             if prefix_text:
                 output_parts.append(prefix_text)
 
-            # Process each use case individually
-            for uc_idx, uc_text in enumerate(use_case_parts):
+            # Process each use case in parallel — order is preserved by map()
+            def _invoke_one(args: tuple) -> tuple:
+                uc_idx, uc_text = args
                 uc_text = uc_text.strip()
                 if not uc_text:
-                    continue
-
+                    return uc_idx, uc_text, None
                 if verbose:
                     print(f"  [llm_processor] usecase_diagrams: processing use case {uc_idx + 1}/{len(use_case_parts)}")
-
-                # Always emit the original use case text verbatim
-                output_parts.append(uc_text)
-
-                # Ask the LLM for ONLY the diagram blocks for this single use case
                 try:
                     system_prompt = SYSTEM_PROMPTS["usecase_diagrams"]
                     human_prompt  = HUMAN_PROMPT_TEMPLATES["usecase_diagrams"].format(text=uc_text)
@@ -299,21 +295,30 @@ class LLMProcessor:
                     ]
                     response = self._llm.invoke(messages)
                     diagram_output = response.content.strip()  # type: ignore[union-attr]
-
-                    # Strip any prose the model added (keep only the macro blocks)
                     diagram_output = _extract_macro_blocks_only(diagram_output)
-
-                    if diagram_output:
-                        output_parts.append(diagram_output)
-                    else:
-                        print(
-                            f"  [llm_processor] usecase_diagrams: use case {uc_idx + 1} "
-                            f"— no macro blocks extracted from LLM output, skipping diagram"
-                        )
+                    return uc_idx, uc_text, diagram_output
                 except Exception as exc:
                     print(
                         f"  [llm_processor] usecase_diagrams: ERROR on use case {uc_idx + 1}: "
                         f"{type(exc).__name__}: {exc} — skipping diagram"
+                    )
+                    return uc_idx, uc_text, None
+
+            max_workers = min(len(use_case_parts), 4)
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                results = list(pool.map(_invoke_one, enumerate(use_case_parts)))
+
+            for uc_idx, uc_text, diagram_output in results:
+                if not uc_text:
+                    continue
+                # Always emit the original use case text verbatim
+                output_parts.append(uc_text)
+                if diagram_output:
+                    output_parts.append(diagram_output)
+                else:
+                    print(
+                        f"  [llm_processor] usecase_diagrams: use case {uc_idx + 1} "
+                        f"— no macro blocks extracted from LLM output, skipping diagram"
                     )
 
             combined = "\n\n".join(output_parts)

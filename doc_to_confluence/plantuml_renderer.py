@@ -41,6 +41,7 @@ Layout produced in Confluence storage format:
   </table>
 """
 import re
+import threading
 import time
 from typing import List, Optional, Tuple
 
@@ -51,6 +52,12 @@ import requests
 KROKI_URL = "https://kroki.io/plantuml/png"   # PNG — always renders in Confluence Cloud
 KROKI_TIMEOUT = 30   # seconds per diagram
 ATTACHMENT_PREFIX = "plantuml_diagram"
+
+# Semaphore limiting concurrent Kroki requests across all threads.
+# The public kroki.io endpoint has no SLA; flooding it with parallel renders
+# from multiple section workers causes 429s and silent diagram loss.
+# 3 concurrent renders is a safe ceiling without meaningfully slowing throughput.
+_KROKI_SEMAPHORE = threading.Semaphore(3)
 ATTACHMENT_EXT = "png"
 ATTACHMENT_CONTENT_TYPE = "image/png"
 DEFAULT_THEME = "cerulean"
@@ -212,31 +219,35 @@ def _render_to_png(plantuml_source: str) -> Optional[bytes]:
     POST plantuml_source to Kroki and return the PNG bytes, or None on failure.
     PNG is used instead of SVG because Confluence Cloud blocks SVG attachments
     from rendering by default (site-level security restriction).
+
+    Acquires _KROKI_SEMAPHORE before each request to cap concurrent calls to
+    the public kroki.io endpoint and avoid 429 rate-limit errors.
     """
-    try:
-        resp = requests.post(
-            KROKI_URL,
-            data=plantuml_source.encode("utf-8"),
-            headers={"Content-Type": "text/plain; charset=utf-8"},
-            timeout=KROKI_TIMEOUT,
-        )
-        if resp.status_code == 200:
-            # Verify we got actual PNG bytes (magic: 89 50 4E 47)
-            if resp.content[:4] == b'\x89PNG':
-                return resp.content
+    with _KROKI_SEMAPHORE:
+        try:
+            resp = requests.post(
+                KROKI_URL,
+                data=plantuml_source.encode("utf-8"),
+                headers={"Content-Type": "text/plain; charset=utf-8"},
+                timeout=KROKI_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                # Verify we got actual PNG bytes (magic: 89 50 4E 47)
+                if resp.content[:4] == b'\x89PNG':
+                    return resp.content
+                print(
+                    f"  [plantuml_renderer] Kroki returned non-PNG content "
+                    f"({len(resp.content)} bytes, first 100: {resp.content[:100]})"
+                )
+                return None
             print(
-                f"  [plantuml_renderer] Kroki returned non-PNG content "
-                f"({len(resp.content)} bytes, first 100: {resp.content[:100]})"
+                f"  [plantuml_renderer] Kroki returned HTTP {resp.status_code}: "
+                f"{resp.text[:200]}"
             )
             return None
-        print(
-            f"  [plantuml_renderer] Kroki returned HTTP {resp.status_code}: "
-            f"{resp.text[:200]}"
-        )
-        return None
-    except requests.RequestException as exc:
-        print(f"  [plantuml_renderer] Kroki request failed: {exc}")
-        return None
+        except requests.RequestException as exc:
+            print(f"  [plantuml_renderer] Kroki request failed: {exc}")
+            return None
 
 
 # ─── Diagram Type Detection ───────────────────────────────────────────────────
