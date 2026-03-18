@@ -110,11 +110,21 @@ class SectionMappingModel(BaseModel):
     def compile_match_regex(self) -> "SectionMappingModel":
         """
         Pre-compile match field as a case-insensitive regex.
-        For match_type='table' the match string is ignored, but we still compile
-        to avoid errors if match is accidentally non-empty.
+
+        When section_id is set the match string is used only as a human-readable
+        label — exact matching is done by ID, so we fall back to a literal
+        (re.escape) pattern to avoid regex errors from titles that contain
+        parentheses or other special characters (e.g. "S101 – Org (Read Only)").
+
+        For match_type='table' the match string is ignored entirely.
         """
         try:
-            object.__setattr__(self, "_compiled_regex", re.compile(self.match, re.IGNORECASE))
+            if self.section_id:
+                # Treat the title as a literal string, not a regex pattern
+                pattern = re.compile(re.escape(self.match), re.IGNORECASE)
+            else:
+                pattern = re.compile(self.match, re.IGNORECASE)
+            object.__setattr__(self, "_compiled_regex", pattern)
         except re.error as exc:
             raise ValueError(f"Invalid regex in match field '{self.match}': {exc}") from exc
         return self
