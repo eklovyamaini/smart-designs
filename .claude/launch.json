@@ -1,0 +1,31 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "smart-agents",
+      "runtimeExecutable": "/Users/eklovya.maini/miniconda3/bin/python",
+      "runtimeArgs": [
+        "-m", "uvicorn",
+        "smart_agents.frontend.main:app",
+        "--host", "127.0.0.1",
+        "--port", "8000",
+        "--loop", "asyncio",
+        "--http", "h11"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "doc-to-confluence",
+      "runtimeExecutable": "/Users/eklovya.maini/miniconda3/bin/python",
+      "runtimeArgs": [
+        "-m", "uvicorn",
+        "doc_to_confluence.frontend.main:app",
+        "--host", "127.0.0.1",
+        "--port", "8001",
+        "--loop", "asyncio",
+        "--http", "h11"
+      ],
+      "port": 8001
+    }
+  ]
+}
